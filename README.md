@@ -32,6 +32,21 @@ This is a working local prototype, not a production system.
 
 Install dependencies:
 
+If `uv` is not installed yet, install it first:
+
+### macOS / Linux
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Windows (PowerShell)
+
+```bash
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Install dependencies
+
 ```bash
 uv sync --dev
 ```
