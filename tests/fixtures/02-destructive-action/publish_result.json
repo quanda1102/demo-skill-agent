@@ -1,0 +1,21 @@
+{
+  "skill_name": "file-archiver",
+  "published": true,
+  "skill_path": "/Users/quananhdang/Project/skill-agent/tests/fixtures/02-destructive-action/file-archiver",
+  "report": {
+    "syntax_pass": true,
+    "metadata_pass": true,
+    "activation_pass": true,
+    "execution_pass": true,
+    "regression_pass": true,
+    "publishable": true,
+    "errors": [],
+    "warnings": [],
+    "logs": [
+      "[Basic happy path — archive two markdown files] pass: archived: 2 file(s)",
+      "[No files match the pattern] pass: archived: 0 file(s)",
+      "[Missing source_dir returns exit 1] pass: "
+    ]
+  },
+  "message": "Published to /Users/quananhdang/Project/skill-agent/tests/fixtures/02-destructive-action/file-archiver"
+}

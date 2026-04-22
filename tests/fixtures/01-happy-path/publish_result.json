@@ -1,0 +1,21 @@
+{
+  "skill_name": "word-counter",
+  "published": true,
+  "skill_path": "/Users/quananhdang/Project/skill-agent/tests/fixtures/01-happy-path/word-counter",
+  "report": {
+    "syntax_pass": true,
+    "metadata_pass": true,
+    "activation_pass": true,
+    "execution_pass": true,
+    "regression_pass": true,
+    "publishable": true,
+    "errors": [],
+    "warnings": [],
+    "logs": [
+      "[Basic happy path with five words] pass: 6",
+      "[Single word input] pass: 1",
+      "[Multiple spaces between words] pass: 3"
+    ]
+  },
+  "message": "Published to /Users/quananhdang/Project/skill-agent/tests/fixtures/01-happy-path/word-counter"
+}
