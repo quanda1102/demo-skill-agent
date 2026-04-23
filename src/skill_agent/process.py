@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from .logging_utils import get_logger
-from .resilience import RetryPolicy, run_with_retry
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.providers.resilience import RetryPolicy, run_with_retry
 
 LOGGER = get_logger("skill_agent.process")
 

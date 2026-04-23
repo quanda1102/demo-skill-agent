@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from src.skill_agent.clarifier import Clarifier, SkillAgentError
-from src.skill_agent.models import Runtime, SkillRequest, SkillSpec
-from src.skill_agent.provider import ProviderError
+from src.skill_agent.generation.clarifier import Clarifier, SkillAgentError
+from src.skill_agent.schemas.skill_model import Runtime, SkillRequest, SkillSpec
+from src.skill_agent.providers.provider import ProviderError
 
 _VALID_SPEC = SkillSpec(
     name="word-counter",
@@ -41,7 +41,7 @@ def test_clarifier_happy_path(mock_provider):
     """Model calls submit_spec directly without asking questions."""
     call_count = {"n": 0}
 
-    def mock_invoke(messages, tools=None):
+    def mock_invoke(messages, tools=None, on_delta=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return {
@@ -63,7 +63,7 @@ def test_clarifier_asks_followup_then_submits(mock_provider):
     """Model asks one question then calls submit_spec."""
     call_count = {"n": 0}
 
-    def mock_invoke(messages, tools=None):
+    def mock_invoke(messages, tools=None, on_delta=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return {

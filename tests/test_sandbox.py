@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.skill_agent.models import (
+from src.skill_agent.schemas.skill_model import (
     GeneratedSkill,
     Runtime,
     SkillFile,

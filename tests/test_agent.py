@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.skill_agent.agent import SkillChatAgent
-from src.skill_agent.models import PublishResult, ValidationReport
-from src.skill_agent.pipeline import PipelineTrace
+from src.skill_agent.agent.agent import SkillChatAgent
+from src.skill_agent.agent.loop import AgentLoopEvent
+from src.skill_agent.schemas.skill_model import PublishResult, ValidationReport
+from src.skill_agent.generation.pipeline import PipelineTrace
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
@@ -41,11 +42,14 @@ def test_filter_skills_surfaces_skill_generator_for_generation_request(mock_prov
     assert "skill-generator" in skill_ids
 
 
-def test_run_turn_keeps_loaded_skill_context_ephemeral(monkeypatch, tmp_path):
+def test_run_turn_stores_tool_messages_in_history(monkeypatch, tmp_path):
+    """Tool-call chain from a turn is persisted in history so the LLM can
+    see which tools/skills were used when building context for the next turn."""
     calls = {"n": 0}
+    second_turn_roles: list[str] = []
 
     class FakeProvider:
-        def invoke(self, messages, tools=None):
+        def invoke(self, messages, tools=None, on_delta=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {
@@ -73,10 +77,8 @@ def test_run_turn_keeps_loaded_skill_context_ephemeral(monkeypatch, tmp_path):
                     "content": "Dùng obsidian-note-writer. Cho tao nội dung cụ thể nếu cần tạo note.",
                     "tool_calls": None,
                 }
-
-            joined = "\n".join(str(m.get("content") or "") for m in messages)
-            assert "Provide a JSON object via stdin" not in joined
-            assert "The note title" not in joined
+            # Second turn: capture the roles the LLM sees in history
+            second_turn_roles.extend(m.get("role") for m in messages)
             return {
                 "role": "assistant",
                 "content": "Chưa có file nào được tạo ở turn trước.",
@@ -90,8 +92,14 @@ def test_run_turn_keeps_loaded_skill_context_ephemeral(monkeypatch, tmp_path):
 
     assert "obsidian-note-writer" in first_reply
     assert "Chưa có file nào" in second_reply
-    assert len(agent.state.messages) == 4
-    assert all(message["role"] in {"user", "assistant"} for message in agent.state.messages)
+
+    # Tool messages from turn 1 must be visible to the LLM during turn 2
+    assert "tool" in second_turn_roles, "role:tool messages should appear in history"
+
+    # History: user + 4 intermediates (2×assistant_tool_call + 2×tool) + assistant + user + assistant
+    assert len(agent.state.messages) == 8
+    roles_in_history = {m["role"] for m in agent.state.messages}
+    assert roles_in_history == {"user", "assistant", "tool"}
 
 
 def test_build_skill_from_spec_tool_serializes_publish_result(monkeypatch, mock_provider, tmp_path):
@@ -113,7 +121,7 @@ def test_build_skill_from_spec_tool_serializes_publish_result(monkeypatch, mock_
                 ),
                 message="published",
             ),
-            PipelineTrace(events=["[2/5] Generating skill package (attempt 1/3)..."]),
+            PipelineTrace(events=[{"kind": "stage", "stage_num": 2, "stage": "generate", "attempt": 1, "max": 3, "msg": "Generating skill package"}]),
         )
 
     monkeypatch.setattr("src.skill_agent.agent.build_skill_from_spec", fake_build_skill_from_spec)
@@ -141,3 +149,29 @@ def test_build_skill_from_spec_tool_serializes_publish_result(monkeypatch, mock_
     assert payload["published"] is True
     assert payload["skill_path"].endswith("link-scraper")
     assert payload["trace"]
+
+
+def test_handle_event_preserves_full_tool_payloads(mock_provider, tmp_path):
+    agent = _make_agent(mock_provider, mock_provider, tmp_path)
+    events = []
+    tool_output = "output-" * 100
+    tool_error = "error-" * 100
+    agent.event_sink = events.append
+
+    agent._handle_event(
+        AgentLoopEvent(
+            type="tool_call",
+            payload={"name": "debug_tool", "arguments": {"a": 1}, "output": tool_output},
+        )
+    )
+    agent._handle_event(
+        AgentLoopEvent(
+            type="tool_error",
+            payload={"name": "debug_tool", "error_type": "tool_execution_failed", "error": tool_error},
+        )
+    )
+
+    assert events[0]["source"] == "agent"
+    assert events[0]["output"] == tool_output
+    assert events[1]["source"] == "agent"
+    assert events[1]["error"] == tool_error

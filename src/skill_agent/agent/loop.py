@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .logging_utils import get_logger
-from .provider import LLMProvider
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.providers.provider import LLMProvider
 
 _MAX_ITERATIONS = 30
 LOGGER = get_logger("skill_agent.loop")
@@ -62,12 +62,16 @@ class AgentLoop:
     def run(self, messages: list) -> str:
         return self.run_turn(messages).content
 
+    def _on_content_delta(self, content: str) -> None:
+        self._emit("model_response_delta", content=content)
+
     def run_turn(self, messages: list) -> AgentLoopResult:
         history = list(messages)
 
         for iteration in range(1, _MAX_ITERATIONS + 1):
+            on_delta = self._on_content_delta if self._on_event else None
             try:
-                result = self.provider.invoke(history, tools=self._tool_schemas)
+                result = self.provider.invoke(history, tools=self._tool_schemas, on_delta=on_delta)
             except Exception:
                 LOGGER.exception(
                     "Provider invocation failed at loop iteration %s/%s.",
@@ -138,6 +142,7 @@ class AgentLoop:
                         error_type="unknown_tool",
                     )
                 else:
+                    self._emit("tool_start", name=name, arguments=args)
                     try:
                         output = tool.fn(**args)
                     except Exception as exc:

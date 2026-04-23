@@ -1,63 +1,20 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Callable
 
-from .logging_utils import get_logger
-from .loop import AgentLoop, AgentLoopError, Tool
-from .models import SkillRequest, SkillSpec
-from .provider import LLMProvider, ProviderError
-from .sanitize import clean
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.agent.loop import AgentLoop, AgentLoopError, Tool
+from src.skill_agent.schemas.skill_model import SkillRequest, SkillSpec
+from src.skill_agent.prompt_loader import load_prompt
+from src.skill_agent.providers.provider import LLMProvider, ProviderError
+from src.skill_agent.sanitize import clean
+from src.skill_agent.schemas.skill_spec_schema import CLARIFIER_SUBMIT_SPEC_PARAMETERS
 
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
 LOGGER = get_logger("skill_agent.clarifier")
-
-_SUBMIT_SPEC_PARAMETERS = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string"},
-        "description": {"type": "string"},
-        "purpose": {"type": "string"},
-        "inputs": {"type": "array", "items": {"type": "string"}},
-        "outputs": {"type": "array", "items": {"type": "string"}},
-        "workflow_steps": {"type": "array", "items": {"type": "string"}},
-        "edge_cases": {"type": "array", "items": {"type": "string"}},
-        "required_files": {"type": "array", "items": {"type": "string"}},
-        "runtime": {"type": "string", "enum": ["python", "node", "shell", "other"]},
-        "test_cases": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string"},
-                    "input": {"type": "string"},
-                    "expected_output": {"type": "string"},
-                    "validation_method": {"type": "string"},
-                    "fixtures": {
-                        "type": "object",
-                        "additionalProperties": {"type": "string"},
-                    },
-                    "expected_stderr": {"type": "string"},
-                    "expected_exit_code": {"type": "integer"},
-                },
-                "required": ["description", "input"],
-            },
-        },
-    },
-    "required": [
-        "name", "description", "purpose", "inputs", "outputs",
-        "workflow_steps", "required_files", "runtime",
-    ],
-}
 
 
 class SkillAgentError(Exception):
     pass
-
-
-def _load_prompt(name: str) -> str:
-    return clean((_PROMPTS_DIR / name).read_text(encoding="utf-8"))
-
 
 def _stdin_ask(question: str) -> str:
     print(f"\n  Clarifier: {question}")
@@ -72,7 +29,7 @@ class Clarifier:
     ) -> None:
         self.provider = provider
         self._ask_fn = ask_fn or _stdin_ask
-        self._system_prompt = _load_prompt("clarifier_system.md")
+        self._system_prompt = load_prompt("clarifier_system.md")
 
     def clarify(self, request: SkillRequest) -> SkillSpec:
         collected: dict = {}
@@ -100,7 +57,7 @@ class Clarifier:
             Tool(
                 name="submit_spec",
                 description="Submit the completed SkillSpec once you have all required information.",
-                parameters=_SUBMIT_SPEC_PARAMETERS,
+                parameters=CLARIFIER_SUBMIT_SPEC_PARAMETERS,
                 fn=_submit_spec,
             ),
         ]

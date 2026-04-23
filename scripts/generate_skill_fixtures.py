@@ -56,9 +56,9 @@ sys.path.insert(0, str(_ROOT))
 
 from demo_generation import run_pipeline  # noqa: E402 — must come after sys.path insert
 
-from src.skill_agent.clarifier import Clarifier  # noqa: E402
-from src.skill_agent.generator import Generator  # noqa: E402
-from src.skill_agent.models import (  # noqa: E402
+from src.skill_agent.generation.clarifier import Clarifier  # noqa: E402
+from src.skill_agent.generation.generator import Generator  # noqa: E402
+from src.skill_agent.schemas.skill_model import (  # noqa: E402
     GeneratedSkill,
     PublishResult,
     Runtime,
@@ -66,10 +66,10 @@ from src.skill_agent.models import (  # noqa: E402
     SkillRequest,
     materialize_skill,
 )
-from src.skill_agent.provider import MinimaxProvider  # noqa: E402
-from src.skill_agent.publisher import PublishGateway  # noqa: E402
+from src.skill_agent.providers.provider import MinimaxProvider  # noqa: E402
+from src.skill_agent.generation.publisher import PublishGateway  # noqa: E402
 from src.skill_agent.sandbox import SandboxRunner  # noqa: E402
-from src.skill_agent.validator import StaticValidator  # noqa: E402
+from src.skill_agent.validation.validator import StaticValidator  # noqa: E402
 
 
 # ── Mutations applied after LLM generation ────────────────────────────────────

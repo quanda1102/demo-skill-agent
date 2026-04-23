@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from src.skill_agent.provider import MinimaxProvider, ProviderCircuitOpenError, ProviderError
+from src.skill_agent.providers.provider import MinimaxProvider, ProviderCircuitOpenError, ProviderError
 
 
 def _mock_response(content: str = "Done.") -> Mock:

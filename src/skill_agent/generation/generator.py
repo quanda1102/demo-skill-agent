@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import Any, Callable
 
-from .logging_utils import get_logger
-from .loop import AgentLoop, AgentLoopError, Tool
-from .models import GeneratedSkill, SkillFile, SkillMetadata, SkillSpec, SkillStatus, SkillTestCase
-from .provider import LLMProvider, ProviderError
-from .sanitize import clean
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.agent.loop import AgentLoop, AgentLoopError, Tool
+from src.skill_agent.schemas.skill_model import GeneratedSkill, SkillFile, SkillMetadata, SkillSpec, SkillStatus, SkillTestCase
+from src.skill_agent.prompt_loader import load_prompt
+from src.skill_agent.providers.provider import LLMProvider, ProviderError
+from src.skill_agent.observability.trace_events import adapt_loop_event
 
 # Canonical taxonomy — duplicated here so the tool description stays self-contained.
 # The validator in validator.py enforces this same list.
@@ -20,17 +21,11 @@ _TAXONOMY_VERBS = (
 )
 
 _SIDE_EFFECTS_ALLOWED = "file_read, file_write, file_delete, network, subprocess"
-
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
 LOGGER = get_logger("skill_agent.generator")
 
 
 class SkillAgentError(Exception):
     pass
-
-
-def _load_prompt(name: str) -> str:
-    return clean((_PROMPTS_DIR / name).read_text(encoding="utf-8"))
 
 
 @dataclass
@@ -229,12 +224,28 @@ def _make_tools(builder: SkillBuilder) -> list[Tool]:
 class Generator:
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
-        self._system_prompt = _load_prompt("generator_system.md")
+        self._system_prompt = load_prompt("generator_system.md")
+        self.event_sink: Callable[[dict[str, Any]], None] | None = None
 
     def generate(self, spec: SkillSpec, errors: list[str] | None = None) -> GeneratedSkill:
         builder = SkillBuilder(_spec=spec)
         tools = _make_tools(builder)
-        loop = AgentLoop(self.provider, tools=tools)
+        event_sink = getattr(self, "event_sink", None)
+        loop = AgentLoop(
+            self.provider,
+            tools=tools,
+            on_event=(
+                (
+                    lambda event: (
+                        event_sink(trace_event)
+                        if (trace_event := adapt_loop_event(event, source="generator")) is not None
+                        else None
+                    )
+                )
+                if callable(event_sink)
+                else None
+            ),
+        )
 
         messages = [
             {"role": "system", "content": self._system_prompt},

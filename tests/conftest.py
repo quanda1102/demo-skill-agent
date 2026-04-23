@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.skill_agent.models import (
+from src.skill_agent.schemas.skill_model import (
     GeneratedSkill,
     Runtime,
     SkillFile,

@@ -1,25 +1,3 @@
-"""
-Docker-based sandbox runner for isolated skill execution.
-
-Usage
------
-Build the sandbox image once:
-
-    docker build -f docker/Dockerfile -t skill-agent-sandbox:latest .
-
-Then use DockerSandboxRunner in place of (or alongside) LocalSandboxRunner:
-
-    from skill_agent.sandbox import DockerSandboxRunner
-    runner = DockerSandboxRunner()
-    report = runner.run(skill, report)
-
-The runner mounts the skill workspace into /workspace inside the container and
-executes `python scripts/run.py` with network disabled by default.
-
-Each test case reuses the same mounted directory, so files written by one test
-are visible to subsequent tests — matching the LocalSandboxRunner behavior.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -27,43 +5,19 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from ..logging_utils import get_logger
-from ..models import GeneratedSkill, SkillTestCase, ValidationReport, materialize_skill
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.schemas.skill_model import GeneratedSkill, SkillTestCase, ValidationReport, materialize_skill
 from ..process import SubprocessContract, run_command
-from .local_runner import TIMEOUT_SECONDS, _matches
+from .base_runner import match_output, format_test_result
 
-# Path inside the container where the skill workspace is mounted.
 CONTAINER_WORKSPACE = "/workspace"
-
 DEFAULT_IMAGE = "skill-agent-sandbox:latest"
+TIMEOUT_SECONDS = 10
 LOGGER = get_logger("skill_agent.sandbox.docker")
 DOCKER_HEALTH_CONTRACT = SubprocessContract(timeout_seconds=5)
 
 
 class DockerSandboxRunner:
-    """
-    Runs skill tests inside a Docker container.
-
-    Network is disabled by default (--network none). Each test in a run shares
-    the same mounted temp directory, preserving the stateful fixture semantics
-    of LocalSandboxRunner.
-
-    Parameters
-    ----------
-    image:
-        Docker image to use. Must have Python available at /usr/bin/python or
-        the PATH equivalent. Build with: docker build -f docker/Dockerfile .
-    timeout:
-        Per-test timeout in seconds.
-    memory_limit:
-        Docker --memory flag value (e.g. "256m"). None = no limit.
-    cpus:
-        Docker --cpus flag value (e.g. 0.5 for half a core). None = no limit.
-    network:
-        Docker --network value. Defaults to "none" (fully isolated).
-        Pass "bridge" only if the skill explicitly requires outbound access.
-    """
-
     def __init__(
         self,
         image: str = DEFAULT_IMAGE,
@@ -77,11 +31,7 @@ class DockerSandboxRunner:
         self.memory_limit = memory_limit
         self.cpus = cpus
         self.network = network
-        self._docker_ok: bool | None = None  # cached after first check
-
-    # ------------------------------------------------------------------
-    # Public API — same shape as LocalSandboxRunner
-    # ------------------------------------------------------------------
+        self._docker_ok: bool | None = None
 
     def run(self, skill: GeneratedSkill, report: ValidationReport) -> ValidationReport:
         if not _docker_available():
@@ -102,8 +52,6 @@ class DockerSandboxRunner:
             report.compute_publishable()
             return report
 
-        # All tests share one temp dir so fixture files created by an earlier
-        # test are visible to later tests (same semantic as LocalSandboxRunner).
         with tempfile.TemporaryDirectory() as tmp:
             skill_dir = materialize_skill(skill, Path(tmp))
             passed = 0
@@ -121,13 +69,9 @@ class DockerSandboxRunner:
                     )
 
         report.execution_pass = failed == 0
-        report.regression_pass = True  # no prior versions in demo
+        report.regression_pass = True
         report.compute_publishable()
         return report
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _run_test_case(self, skill_dir: Path, tc: SkillTestCase) -> dict[str, str]:
         entrypoint = skill_dir / "scripts" / "run.py"
@@ -152,40 +96,18 @@ class DockerSandboxRunner:
             stderr = proc.stderr.strip()
 
             expected_exit_code = 0 if tc.expected_exit_code is None else tc.expected_exit_code
-            stdout_ok = _matches(output, tc.expected_output, tc.validation_method)
+            stdout_ok = match_output(output, tc.expected_output, tc.validation_method)
             if tc.expected_stderr is None:
                 stderr_ok = stderr == "" if expected_exit_code == 0 else True
             else:
-                stderr_ok = _matches(stderr, tc.expected_stderr, tc.validation_method)
+                stderr_ok = match_output(stderr, tc.expected_stderr, tc.validation_method)
             exit_ok = proc.returncode == expected_exit_code
-            ok = stdout_ok and stderr_ok and exit_ok
 
-            if ok:
-                detail = output[:200] or stderr[:200] or f"exit={proc.returncode}"
-                return {"outcome": "pass", "detail": detail}
-
-            parts = []
-            if tc.expected_output and not stdout_ok:
-                parts.append(
-                    f"expected stdout {tc.validation_method}: {tc.expected_output.strip()[:200]!r}"
-                )
-            if output:
-                parts.append(f"stdout: {output[:200]}")
-            if tc.expected_stderr is not None and not stderr_ok:
-                parts.append(
-                    f"expected stderr {tc.validation_method}: {tc.expected_stderr.strip()[:200]!r}"
-                )
-            if stderr:
-                parts.append(f"stderr: {stderr[:400]}")
-            if not exit_ok:
-                parts.append(f"expected exit={expected_exit_code}")
-            if proc.returncode != 0 or not exit_ok:
-                parts.append(f"exit={proc.returncode}")
-            detail = " | ".join(parts) if parts else f"expected {tc.expected_output!r}, got {output!r}"
-            return {"outcome": "fail", "detail": detail}
-
+            return format_test_result(
+                tc, output, stderr, proc.returncode,
+                stdout_ok, stderr_ok, exit_ok,
+            )
         except subprocess.TimeoutExpired:
-            # Kill the container on timeout to avoid orphan processes.
             _kill_timed_out_container(self.image)
             LOGGER.error("Docker sandbox test '%s' timed out after %ss.", tc.description, self.timeout)
             return {"outcome": "fail", "detail": f"Timed out after {self.timeout}s"}
@@ -196,8 +118,8 @@ class DockerSandboxRunner:
     def _build_docker_cmd(self, skill_dir: Path) -> list[str]:
         cmd = [
             "docker", "run",
-            "--rm",          # remove container after exit
-            "-i",            # keep stdin open so we can pipe input
+            "--rm",
+            "-i",
             "--network", self.network,
             "-v", f"{skill_dir}:{CONTAINER_WORKSPACE}",
             "-w", CONTAINER_WORKSPACE,
@@ -210,12 +132,7 @@ class DockerSandboxRunner:
         return cmd
 
 
-# ------------------------------------------------------------------
-# Module-level helpers
-# ------------------------------------------------------------------
-
 def _docker_available() -> bool:
-    """Return True if Docker CLI is present and the daemon is reachable."""
     if shutil.which("docker") is None:
         return False
     try:
@@ -231,7 +148,6 @@ def _docker_available() -> bool:
 
 
 def _kill_timed_out_container(image: str) -> None:
-    """Best-effort attempt to stop any running container from this image."""
     try:
         ids_result = run_command(
             ["docker", "ps", "-q", "--filter", f"ancestor={image}"],

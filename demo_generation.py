@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import Callable
 
 from src.skill_agent.sanitize import clean
-from src.skill_agent.clarifier import Clarifier, SkillAgentError as ClarifierSkillAgentError
-from src.skill_agent.generator import Generator, SkillAgentError as GeneratorSkillAgentError
-from src.skill_agent.logging_utils import configure_logging
-from src.skill_agent.models import GeneratedSkill, PublishResult, Runtime, SkillRequest, ValidationReport
-from src.skill_agent.provider import MinimaxProvider
-from src.skill_agent.publisher import PublishGateway
+from src.skill_agent.generation.clarifier import Clarifier, SkillAgentError as ClarifierSkillAgentError
+from src.skill_agent.generation.generator import Generator, SkillAgentError as GeneratorSkillAgentError
+from src.skill_agent.observability.logging_utils import configure_logging
+from src.skill_agent.schemas.skill_model import GeneratedSkill, PublishResult, Runtime, SkillRequest, ValidationReport
+from src.skill_agent.providers.provider import MinimaxProvider
+from src.skill_agent.generation.publisher import PublishGateway
 from src.skill_agent.sandbox import SandboxRunner
-from src.skill_agent.validator import StaticValidator
+from src.skill_agent.validation.validator import StaticValidator
 
 SKILLS_DIR = Path(__file__).parent / "skills"
 _MAX_RETRIES = 3

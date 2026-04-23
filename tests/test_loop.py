@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from src.skill_agent.loop import AgentLoop, Tool
+from src.skill_agent.agent.loop import AgentLoop, Tool
 
 
 def _tool_call(name: str, arguments: str) -> dict:
@@ -23,7 +23,7 @@ def test_agent_loop_surfaces_tool_execution_errors_structurally():
         def __init__(self) -> None:
             self.calls = 0
 
-        def invoke(self, messages, tools=None):
+        def invoke(self, messages, tools=None, on_delta=None):
             self.calls += 1
             if self.calls == 1:
                 return {

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import demo_generation as dg
-from src.skill_agent.generator import SkillAgentError as GeneratorSkillAgentError
-from src.skill_agent.models import PublishResult, ValidationReport
+from src.skill_agent.generation.generator import SkillAgentError as GeneratorSkillAgentError
+from src.skill_agent.schemas.skill_model import PublishResult, ValidationReport
 
 
 def test_run_pipeline_retries_after_generator_api_error(monkeypatch, sample_request, sample_spec, sample_skill):

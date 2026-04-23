@@ -9,7 +9,7 @@ Then open http://localhost:7860 in your browser.
 
 Layout:
     Left  — chat (Chatbot + input + buttons)
-    Right — trace/debug panel (all model/tool events from the current turn)
+    Right — trace/debug panel (all model/tool events from the current turn, streamed live)
 
 The agent is instantiated once at startup and reused across all turns.
 If MINIMAX_API_KEY is not set, the UI opens but every send shows an error.
@@ -18,126 +18,43 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
+import threading
 import traceback as tb
 from pathlib import Path
+from typing import Any, Generator
 
 import gradio as gr
+from gradio import ChatMessage
 
-from src.skill_agent.agent import SkillChatAgent
-from src.skill_agent.logging_utils import configure_logging
-from src.skill_agent.provider import MinimaxProvider
+from src.skill_agent.agent.agent import SkillChatAgent
+from src.skill_agent.observability.logging_utils import configure_logging
+from src.skill_agent.providers.provider import MinimaxProvider
 from src.skill_agent.sandbox import DockerSandboxRunner, LocalSandboxRunner
+from src.skill_agent.ui.gradio_assets import APP_CSS, EXAMPLE_PROMPTS
+from src.skill_agent.ui.gradio_trace import (
+    ChatTurnState,
+    TraceTurnState,
+    apply_agent_chat_event,
+    apply_trace_event,
+    finalize_chat_turn,
+    render_trace_markdown,
+    should_update_chat_trace,
+    upsert_build_trace_message,
+)
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
 ROOT_DIR = Path(__file__).parent
 SKILLS_DIR = ROOT_DIR / "skills"
-# Use a separate workspace so the Gradio session doesn't mix with the CLI demo.
 WORKSPACE_DIR = ROOT_DIR / "vault" / "agent-gradio"
 MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY") or None
 configure_logging()
 
-EXAMPLE_PROMPTS = [
-    ["Create a skill that extracts top 5 url from a url"],
-    ["Covert https://vnexpress.net/ into markdown file "],
-    ["Debug why the generated SKILL.md is failing validation and suggest a fix."],
-]
-
-APP_CSS = """
-:root {
-  --paper: #f6f0e4;
-  --paper-deep: #eee5d3;
-  --panel: rgba(255, 250, 242, 0.9);
-  --panel-strong: #fffdf9;
-  --ink: #241e16;
-  --ink-soft: #645847;
-  --line: rgba(88, 67, 36, 0.14);
-  --shadow: 0 18px 48px rgba(66, 49, 22, 0.12);
-  --ok: #1a6a46;
-  --warn: #9a6a00;
-  --error: #9a2b20;
-}
-
-body,
-.gradio-container {
-  background:
-    radial-gradient(circle at top left, rgba(225, 166, 72, 0.22), transparent 30%),
-    radial-gradient(circle at bottom right, rgba(161, 124, 71, 0.14), transparent 28%),
-    linear-gradient(180deg, var(--paper) 0%, var(--paper-deep) 100%);
-  color: var(--ink);
-}
-
-.gradio-container {
-  max-width: 1320px !important;
-  padding: 24px !important;
-}
-
-.hero-card,
-.panel-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 22px;
-  box-shadow: var(--shadow);
-}
-
-.panel-card {
-  padding: 10px !important;
-}
-
-#chatbot,
-#trace-box {
-  border-radius: 18px;
-  overflow: hidden;
-}
-
-#chatbot {
-  min-height: 560px;
-}
-
-#message-box textarea {
-  font-size: 1rem !important;
-  line-height: 1.55 !important;
-}
-
-#trace-box textarea,
-#trace-box pre,
-#trace-box code {
-  font-size: 13px !important;
-  line-height: 1.55 !important;
-}
-
-.trace-toggle {
-  margin-bottom: 10px;
-}
-
-.gradio-button {
-  border-radius: 999px !important;
-}
-
-@media (max-width: 900px) {
-  .gradio-container {
-    padding: 14px !important;
-  }
-
-  .hero-card,
-  .panel-card {
-    border-radius: 18px;
-  }
-
-  #chatbot {
-    min-height: 420px;
-  }
-}
-"""
-
 
 # ---------------------------------------------------------------------------
 # Agent instantiation — done once at module load time.
-#
-# We always pass verbose=True so that _handle_event fires and forwards events
-# to whatever event_sink is currently set. The verbose checkbox in the UI only
-# controls whether the trace panel is shown, not whether events are collected.
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
@@ -147,7 +64,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use DockerSandboxRunner for skill generation tests (requires skill-agent-sandbox:latest).",
     )
-    # Ignore Gradio's own flags that appear when launched via `gradio app_gradio.py`.
     return parser.parse_known_args()[0]
 
 
@@ -175,79 +91,107 @@ _AGENT: SkillChatAgent | Exception = _build_agent(_ARGS.docker)
 
 
 # ---------------------------------------------------------------------------
-# Turn handler
+# Turn handler — generator function for live streaming
 # ---------------------------------------------------------------------------
 
 def send_message(
     user_message: str,
-    history: list[dict],
+    history: list,
     show_trace: bool,
-    current_trace: str,
-) -> tuple[list[dict], str, str, str]:
+    current_events: list[dict[str, Any]],
+) -> Generator[tuple[list, str, str, list[dict[str, Any]]], None, None]:
     """
-    Process one turn and return (updated_history, cleared_input, trace_text, raw_trace).
+    Process one turn and stream updates live.
 
-    history uses the Gradio messages format:
-        [{"role": "user" | "assistant", "content": str}, ...]
+    Chatbot uses ChatMessage objects so tool calls appear as collapsible blocks
+    inside the conversation.  Each tool starts as "pending" (spinner) and
+    transitions to "done" when the result arrives.
     """
     user_message = user_message.strip()
     if not user_message:
-        return history, "", _format_trace(current_trace, show_trace), current_trace
+        yield history, "", render_trace_markdown(current_events, show_trace=show_trace), current_events
+        return
 
     if isinstance(_AGENT, Exception):
         err = str(_AGENT)
-        raw_trace = f"startup error\n{err}"
-        return (
-            history + [
-                {"role": "user", "content": user_message},
-                {"role": "assistant", "content": f"⚠️ Agent unavailable:\n\n{err}"},
+        ev: list[dict[str, Any]] = [{"source": "agent", "kind": "error", "msg": f"startup error: {err}"}]
+        yield (
+            list(history) + [
+                ChatMessage(role="user", content=user_message),
+                ChatMessage(role="assistant", content=f"Agent unavailable:\n\n{err}"),
             ],
             "",
-            _format_trace(raw_trace, show_trace),
-            raw_trace,
+            render_trace_markdown(ev, show_trace=show_trace),
+            ev,
+        )
+        return
+
+    trace_state = TraceTurnState()
+    reply_holder: list[str] = []
+    exc_holder: list[str] = []
+    q: queue.SimpleQueue[dict[str, Any] | None] = queue.SimpleQueue()
+
+    def _event_sink(entry: dict[str, Any]) -> None:
+        q.put(entry)
+
+    def _run() -> None:
+        try:
+            _AGENT.event_sink = _event_sink
+            reply_holder.append(_AGENT.run_turn(user_message))
+        except Exception as exc:
+            reply_holder.append(f"Error: {exc}")
+            exc_holder.append(tb.format_exc())
+        finally:
+            _AGENT.event_sink = None
+            q.put(None)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # --- Chatbot state (mutable list of ChatMessage) ---
+    chat_state = ChatTurnState(messages=list(history) + [ChatMessage(role="user", content=user_message)])
+
+    while True:
+        entry = q.get()
+        if entry is None:
+            break
+
+        apply_trace_event(trace_state, entry)
+        apply_agent_chat_event(chat_state, entry)
+
+        if should_update_chat_trace(entry):
+            upsert_build_trace_message(chat_state, events=trace_state.events, pending=True)
+
+        yield (
+            chat_state.messages,
+            "",
+            render_trace_markdown(trace_state.events, show_trace=show_trace),
+            trace_state.events,
         )
 
-    # Collect all model/tool events emitted during this turn.
-    events: list[str] = []
-    _AGENT.event_sink = events.append
-    try:
-        reply = _AGENT.run_turn(user_message)
-    except Exception as exc:
-        reply = f"Error: {exc}"
-        events.append("--- traceback ---")
-        events.append(tb.format_exc())
-    finally:
-        # Always clear the sink so stray events from a later background call
-        # (if any) don't accumulate in a stale list.
-        _AGENT.event_sink = None
+    if exc_holder:
+        apply_trace_event(trace_state, {"source": "agent", "kind": "error", "msg": exc_holder[0]})
 
-    raw_trace = "\n".join(events)
-    updated = history + [
-        {"role": "user", "content": user_message},
-        {"role": "assistant", "content": reply},
-    ]
-    return updated, "", _format_trace(raw_trace, show_trace), raw_trace
+    thread.join()
+    reply = reply_holder[0] if reply_holder else "Error: no reply received"
+    finalize_chat_turn(chat_state, events=trace_state.events, reply=reply)
+
+    yield (
+        chat_state.messages,
+        "",
+        render_trace_markdown(trace_state.events, show_trace=show_trace),
+        trace_state.events,
+    )
 
 
-def clear_session(show_trace: bool) -> tuple[list, str, str, str]:
-    """Reset the chat history, input box, trace panel, and agent memory."""
+def clear_session(show_trace: bool) -> tuple[list, str, str, list]:
     if not isinstance(_AGENT, Exception):
-        _AGENT.state.messages.clear()
-    return [], "", _format_trace("", show_trace), ""
+        _AGENT.reset_session()
+    return [], "", render_trace_markdown([], show_trace=show_trace), []
 
 
-def toggle_trace(show_trace: bool, raw_trace: str) -> str:
-    return _format_trace(raw_trace, show_trace)
-
-
-def _format_trace(raw_trace: str, show_trace: bool) -> str:
-    if not show_trace:
-        return "# Trace hidden\nEnable the inspector when you need raw model and tool events for the latest turn."
-
-    raw_trace = raw_trace.strip()
-    if not raw_trace:
-        return "# Waiting for a turn\nSend a message to inspect model and tool events for the latest turn."
-    return raw_trace
+def toggle_trace(show_trace: bool, events: list[dict[str, Any]]) -> str:
+    return render_trace_markdown(events, show_trace=show_trace)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +202,7 @@ with gr.Blocks(
     title="Skill Agent Console",
     fill_width=True,
 ) as demo:
-    raw_trace_state = gr.State("")
+    raw_trace_state = gr.State([])  # list[dict] — structured events for current turn
 
     with gr.Row(equal_height=True):
         # Left column: chat
@@ -308,7 +252,7 @@ Use the chat like a normal assistant. The agent keeps its session state until yo
                 gr.Markdown(
                     """
 ### Turn Inspector
-This panel shows raw model and tool events for the latest turn. Hide it when you want a calmer chat view.
+Live model and tool events for the current turn. Each event streams in as it happens.
 """,
                     container=False,
                 )
@@ -318,23 +262,17 @@ This panel shows raw model and tool events for the latest turn. Hide it when you
                     value=True,
                     elem_classes="trace-toggle",
                 )
-                trace_box = gr.Code(
-                    value=_format_trace("", True),
-                    language="shell",
+                trace_box = gr.Markdown(
+                    value=render_trace_markdown([], show_trace=True),
                     label="Latest turn trace",
-                    lines=30,
-                    interactive=False,
-                    show_line_numbers=False,
-                    wrap_lines=True,
-                    buttons=["copy"],
                     elem_id="trace-box",
                 )
                 with gr.Accordion("Inspector notes", open=False):
                     gr.Markdown(
                         """
-- Only the latest turn is shown here.
-- `Clear session` also clears the agent's conversation memory.
-- Startup warnings stay in the header so the chat area remains uncluttered.
+- Events stream live as the agent runs — no waiting for the full turn.
+- Pipeline stages (generate / validate / sandbox / publish) appear inline.
+- Only the latest turn is shown. `Clear session` also resets agent memory.
 """,
                         container=False,
                     )
@@ -343,7 +281,6 @@ This panel shows raw model and tool events for the latest turn. Hide it when you
     _send_outputs = [chatbot, user_input, trace_box, raw_trace_state]
 
     send_btn.click(fn=send_message, inputs=_send_inputs, outputs=_send_outputs)
-    # Submit on Enter so the user doesn't have to click.
     user_input.submit(fn=send_message, inputs=_send_inputs, outputs=_send_outputs)
 
     clear_btn.click(fn=clear_session, inputs=show_trace_cb, outputs=[chatbot, user_input, trace_box, raw_trace_state])
@@ -351,6 +288,7 @@ This panel shows raw model and tool events for the latest turn. Hide it when you
 
 demo.theme = gr.themes.Soft()
 demo.css = APP_CSS
+demo.queue()  # required for generator-based streaming; must be set at module level
 
 
 if __name__ == "__main__":

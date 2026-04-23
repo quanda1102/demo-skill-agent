@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from src.skill_agent.logging_utils import configure_logging
+from src.skill_agent.observability.logging_utils import configure_logging
 from src.skill_agent.runtime import (
     ExecutionResult,
     PolicyDecision,

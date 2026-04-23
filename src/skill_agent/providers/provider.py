@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 
-from .logging_utils import get_logger
-from .resilience import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, RetryPolicy, run_with_retry
-from .sanitize import clean
-from .tool import MinimaxToolCall
+from src.skill_agent.observability.logging_utils import get_logger
+from src.skill_agent.providers.resilience import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, RetryPolicy, run_with_retry
+from src.skill_agent.sanitize import clean
+from src.skill_agent.providers.tool import MinimaxToolCall
 
 LOGGER = get_logger("skill_agent.provider")
 
@@ -85,6 +86,7 @@ class MinimaxRequest:
     max_tokens: int
     tools: Optional[list] = None
     response_format: Optional[dict] = None
+    stream: bool = False
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -99,6 +101,8 @@ class MinimaxRequest:
             d["tool_choice"] = "auto"
         if self.response_format:
             d["response_format"] = self.response_format
+        if self.stream:
+            d["stream"] = True
         return d
 
 
@@ -261,7 +265,20 @@ class MinimaxProvider(LLMProvider):
                 out.append({"role": role, "content": safe_content})
         return out
 
-    def invoke(self, messages: list, tools: list | None = None) -> dict:
+    def invoke(
+        self,
+        messages: list,
+        tools: list | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> dict:
+        """
+        Invoke the model.
+
+        When ``on_delta`` is provided the request uses SSE streaming (``stream=true``).
+        Each content token is forwarded to ``on_delta`` as it arrives.  Tool-call
+        arguments are accumulated internally and returned in the final dict — the
+        caller receives the same structure regardless of streaming mode.
+        """
         serialized = self._serialize_messages(messages)
         request = MinimaxRequest(
             model=self.model,
@@ -271,6 +288,7 @@ class MinimaxProvider(LLMProvider):
             max_tokens=self.max_tokens,
             tools=tools if tools is not None else self.tools,
             response_format=self.response_format,
+            stream=on_delta is not None,
         )
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -286,17 +304,33 @@ class MinimaxProvider(LLMProvider):
             raise ProviderCircuitOpenError(message) from exc
 
         try:
-            response = run_with_retry(
-                operation_name=operation_name,
-                func=lambda: self._request_once(request, headers),
-                retry_policy=self.retry_policy,
-                logger=LOGGER,
-                is_retryable=self._is_retryable_error,
-            )
-            data = response.json()
-            parsed = MinimaxResponse.from_dict(data)
-            if not parsed.choices:
-                raise ValueError("response did not contain any choices")
+            if on_delta is not None:
+                result = self._invoke_streaming(request, headers, on_delta)
+            else:
+                response = run_with_retry(
+                    operation_name=operation_name,
+                    func=lambda: self._request_once(request, headers),
+                    retry_policy=self.retry_policy,
+                    logger=LOGGER,
+                    is_retryable=self._is_retryable_error,
+                )
+                data = response.json()
+                parsed = MinimaxResponse.from_dict(data)
+                if not parsed.choices:
+                    raise ValueError("response did not contain any choices")
+                choice = parsed.choices[0]
+                if choice.finish_reason == "tool_calls":
+                    result = {
+                        "role": "assistant",
+                        "content": choice.message.content,
+                        "tool_calls": data["choices"][0]["message"]["tool_calls"],
+                    }
+                else:
+                    result = {
+                        "role": "assistant",
+                        "content": choice.message.content,
+                        "tool_calls": None,
+                    }
         except Exception as exc:
             self.circuit_breaker.record_failure(exc)
             message = f"{operation_name} failed: {exc}"
@@ -304,19 +338,77 @@ class MinimaxProvider(LLMProvider):
             raise ProviderError(message) from exc
 
         self.circuit_breaker.record_success()
-        choice = parsed.choices[0]
+        return result
 
-        if choice.finish_reason == "tool_calls":
-            return {
-                "role": "assistant",
-                "content": choice.message.content,
-                "tool_calls": data["choices"][0]["message"]["tool_calls"],
-            }
-        return {
-            "role": "assistant",
-            "content": choice.message.content,
-            "tool_calls": None,
-        }
+    def _invoke_streaming(
+        self,
+        request: MinimaxRequest,
+        headers: dict[str, str],
+        on_delta: Callable[[str], None],
+    ) -> dict:
+        """Open an SSE stream, forward content deltas via on_delta, return final dict."""
+        content_parts: list[str] = []
+        # tool_calls_acc[idx] mirrors the OpenAI streaming format for tool calls
+        tool_calls_acc: list[dict] = []
+        finish_reason = "stop"
+
+        with httpx.stream(
+            "POST",
+            self.endpoint,
+            json=request.to_dict(),
+            headers=headers,
+            timeout=self.timeout,
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines():
+                line = raw_line.strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta", {})
+
+                content = delta.get("content")
+                if content:
+                    content_parts.append(content)
+                    on_delta(content)
+
+                tool_call_chunks = delta.get("tool_calls") or []
+                for tc in tool_call_chunks:
+                    idx = tc.get("index", 0)
+                    while len(tool_calls_acc) <= idx:
+                        tool_calls_acc.append({
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                    if tc.get("id"):
+                        tool_calls_acc[idx]["id"] = tc["id"]
+                    if fn := tc.get("function"):
+                        if fn.get("name"):
+                            tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                # Emit a heartbeat so the consumer queue doesn't block during
+                # the (potentially long) tool-argument streaming phase.
+                if tool_call_chunks and not content:
+                    on_delta("")
+
+        full_content = "".join(content_parts) or None
+        if finish_reason == "tool_calls" and tool_calls_acc:
+            return {"role": "assistant", "content": full_content, "tool_calls": tool_calls_acc}
+        return {"role": "assistant", "content": full_content, "tool_calls": None}
 
     def _request_once(self, request: MinimaxRequest, headers: dict[str, str]) -> httpx.Response:
         response = httpx.post(

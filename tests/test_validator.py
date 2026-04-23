@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from src.skill_agent.models import (
+from src.skill_agent.schemas.skill_model import (
     GeneratedSkill,
     Runtime,
     SkillFile,
     SkillMetadata,
     SkillSpec,
-    SkillStatus,
     SkillTestCase,
 )
-from src.skill_agent.validator import StaticValidator
+from src.skill_agent.validation.validator import StaticValidator
 
 _SPEC = SkillSpec(
     name="word-counter",

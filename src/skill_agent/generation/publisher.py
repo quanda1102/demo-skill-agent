@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from .models import GeneratedSkill, PublishResult, ValidationReport, materialize_skill
+import yaml
+
+from src.skill_agent.schemas.skill_model import GeneratedSkill, PublishResult, ValidationReport, materialize_skill
 
 
 class PublishGateway:
@@ -52,6 +54,19 @@ def _stamp_published(skill_path: Path) -> None:
     if not skill_md.exists():
         return
     content = skill_md.read_text(encoding="utf-8")
-    for old in ("status: generated", "status: validated", "status: draft"):
-        content = content.replace(old, "status: published")
-    skill_md.write_text(content, encoding="utf-8")
+    if not content.startswith("---"):
+        return
+
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return
+
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return
+
+    if "status" in fm and fm["status"] in ("generated", "validated", "draft"):
+        fm["status"] = "published"
+        parts[1] = yaml.dump(fm, default_flow_style=False, sort_keys=False)
+        skill_md.write_text("---".join(parts), encoding="utf-8")

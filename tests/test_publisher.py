@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from src.skill_agent.publisher import PublishGateway
-from src.skill_agent.models import ValidationReport
+from src.skill_agent.generation.publisher import PublishGateway
+from src.skill_agent.schemas.skill_model import ValidationReport
 
 
 def test_rejected_skill_does_not_write_files(sample_skill, tmp_path):

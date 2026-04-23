@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-from ..logging_utils import get_logger
+from src.skill_agent.observability.logging_utils import get_logger
 from ..process import SubprocessContract, run_command
 from .models import ExecutionResult, ExecutionStatus, LoadedSkill, RuntimeLog, TaskStatus
 

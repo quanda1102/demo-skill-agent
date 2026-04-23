@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.skill_agent.models import (
+from src.skill_agent.schemas.skill_model import (
     Runtime,
     SkillFile,
     SkillMetadata,

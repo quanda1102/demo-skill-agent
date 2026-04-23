@@ -7,16 +7,16 @@ import sys
 from pathlib import Path
 
 from src.skill_agent.agent import SkillChatAgent
-from src.skill_agent.logging_utils import configure_logging
-from src.skill_agent.provider import MinimaxProvider
+from src.skill_agent.observability.logging_utils import configure_logging
+from src.skill_agent.providers.provider import MinimaxProvider
 from src.skill_agent.sandbox import DockerSandboxRunner, LocalSandboxRunner
 
 SKILLS_DIR = Path(__file__).parent / "skills"
 WORKSPACE_DIR = Path(__file__).parent / "vault" / "agent-demo"
 
 
-def _print_verbose(message: str) -> None:
-    print(f"  {message}")
+def _print_verbose(event: dict) -> None:
+    print(f"  [{event.get('kind', 'event')}] {event.get('msg', '')}")
 
 
 def _save_tty_state():
