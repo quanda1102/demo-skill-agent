@@ -1,10 +1,13 @@
-# Hướng Dẫn Cấu Hình Policy Trên UI
+# Hướng dẫn sử dụng Config tab
 
-Tài liệu này giải thích tab `Config` trong `app_gradio.py` theo đúng kiến trúc hiện tại của project: field nào đi vào đâu, ảnh hưởng bước nào, và field nào mới chỉ là config/schema.
+File này ghi lại cách tab `Config` trong `app_gradio.py` đang hoạt động.
 
-## Policy Đi Theo Nhánh Nào Trong Architecture
+Giải thích: tab này dùng để chỉnh `ValidationPolicy` cho quá trình generate/publish skill.  
+Nó chủ yếu ảnh hưởng đến bước **static validation**, không phải toàn bộ runtime policy.
 
-Trong `docs/architecture.md`, tab `Config` nằm trên nhánh generate/publish:
+## Luồng hiện tại
+
+Theo architecture hiện tại, tab `Config` nằm trong nhánh build/publish skill:
 
 ```text
 Config Tab
@@ -15,253 +18,405 @@ Config Tab
 -> StaticValidator
 -> SandboxRunner
 -> PublishGateway
-```
+````
 
-Ý nghĩa thực tế:
+Giải thích:
 
-- cấu hình trong tab `Config` chủ yếu tác động đến bước `StaticValidator`
-- nếu validation pass thì skill mới được đưa sang `SandboxRunner`
-- nếu sandbox pass thì skill mới đi tiếp tới `PublishGateway`
-- các field này không điều khiển trực tiếp `PolicyEngine` của runtime demo
-- tuy vậy, metadata được validate ở đây sẽ được runtime dùng lại để chọn skill, check capability, và hiển thị review/risk context
+* UI config tạo ra một `ValidationPolicy`
+* `SkillChatAgent` dùng policy này khi build skill
+* `StaticValidator` đọc policy để check metadata, activation, dependency, code safety
+* nếu static validation pass thì mới chạy sandbox
+* nếu sandbox pass thì mới publish
 
-## Cách Dùng Nhanh
+Điểm dễ nhầm:
 
-1. Mở app:
+* tab `Config` không điều khiển trực tiếp `PolicyEngine`
+* metadata được validate ở đây sẽ ảnh hưởng về sau, vì runtime dùng metadata để chọn skill, check capability, hiển thị risk/review context
+
+## Cách dùng nhanh
+
+Chạy app:
 
 ```bash
 uv run python app_gradio.py
 ```
 
-2. Vào tab `Config`.
+Vào tab `Config`.
 
-3. Nếu muốn nạp policy từ file YAML:
-
-- điền `Policy YAML Path`
-- bấm `Load Policy File`
-
-Ví dụ:
+Nếu muốn load policy từ YAML:
 
 ```text
 policies/mvp-safe.yaml
 ```
 
-4. Chỉnh các field trên form.
+Sau đó bấm:
 
-5. Bấm `Apply UI Overrides` để áp dụng policy mới cho các lần build tiếp theo.
+```text
+Load Policy File
+```
 
-6. Muốn quay về policy đang active thì bấm `Reset Form To Active`.
+Chỉnh field trên form rồi bấm:
 
-## Giải Thích Từng Field Trên UI
+```text
+Apply UI Overrides
+```
 
-### 1. `Policy YAML Path`
+Từ lúc đó trở đi, các lần build skill tiếp theo sẽ dùng policy mới.
 
-Field này dùng để nạp toàn bộ `ValidationPolicy` từ file YAML thông qua `ValidationPolicyLoader`.
+Nếu muốn quay lại policy đang active thì bấm:
 
-Nó có vai trò:
+```text
+Reset Form To Active
+```
 
-- thay policy mặc định bằng policy riêng
-- làm dữ liệu gốc để điền lại form UI
-- cập nhật policy active mà `SkillChatAgent` sẽ dùng cho các lần build skill tiếp theo
+Lưu ý: đổi config không tự chạy lại validation cho skill cũ. Nó chỉ ảnh hưởng các lần build/validate sau.
 
-Nó không tự chạy validation. Nó chỉ đổi config mà pipeline sẽ dùng ở turn sau.
+---
 
-### 2. `activation.min_description_chars`
+# Các field đang dùng thật
 
-Field này đi vào `validate_skill_activation()`.
+## `Policy YAML Path`
 
-Tác dụng:
+Dùng để load toàn bộ `ValidationPolicy` từ file YAML.
 
-- kiểm tra `skill.metadata.description` có quá ngắn hay không
-- nếu ngắn hơn ngưỡng này thì validation fail ngay trước sandbox
+Nó làm 3 việc:
 
-Về mặt kiến trúc, đây là quality gate sớm ở lớp `StaticValidator`.
+* đọc policy từ file
+* đổ dữ liệu policy lên form
+* cập nhật active policy cho các lần build skill tiếp theo
 
-### 3. `activation.max_description_chars`
+Nó không tự validate skill. Nó chỉ đổi cấu hình.
 
-Field này cũng đi vào `validate_skill_activation()`.
+---
 
-Tác dụng hiện tại:
+## `activation.min_description_chars`
 
-- nếu description dài hơn ngưỡng thì chỉ tạo warning
-- chưa block publish
+Rule này check `skill.metadata.description`.
 
-Nghĩa là đây là rule chất lượng mềm, không phải hard gate.
+Nếu description ngắn hơn số này thì fail static validation.
 
-### 4. `activation.require_action_verb`
+Đây là hard gate.
 
-Field này bật hoặc tắt heuristic kiểm tra mô tả có động từ hành động hay không.
+Nói dễ hiểu: description quá sơ sài thì skill không được chạy tiếp sang sandbox.
 
-Tác dụng hiện tại:
+---
 
-- nếu bật và description không match heuristic verb regex, validator thêm warning
-- chưa fail build
+## `activation.max_description_chars`
 
-Mục đích kiến trúc:
+Cũng check `skill.metadata.description`.
 
-- làm cho activation description mang tính hành động hơn
-- giúp metadata dễ hiểu hơn cho agent/runtime khi chọn và diễn giải skill
+Hiện tại nếu description dài hơn ngưỡng này thì chỉ warning, chưa fail.
 
-### 5. `activation.forbidden_placeholder_patterns`
+Đây là quality warning, không phải hard gate.
 
-Đây là danh sách regex cấm trong description.
+---
 
-Tác dụng:
+## `activation.require_action_verb`
 
-- chạy trong `validate_skill_activation()`
-- nếu description match các pattern kiểu `TODO`, `FIXME`, `PLACEHOLDER`, `<...>` thì validation fail
+Rule này check description có vẻ “mang tính hành động” hay không.
 
-Đây là hard gate ở bước validation, dùng để chặn skill mô tả còn placeholder.
+Ví dụ description nên có kiểu:
 
-### 6. `dependencies.allowed_imports`
+```text
+create note
+summarize file
+validate config
+search documents
+```
 
-Đây là allowlist cho một bộ third-party import detector dạng regex.
+Hiện tại rule này chỉ là heuristic. Nếu không match thì thêm warning, chưa fail.
 
-Tác dụng:
+Bản chất là một check đơn giản để tránh description quá mơ hồ.
 
-- chạy trong `_validate_no_external_dependencies()`
-- nếu code import package ngoài stdlib và package đó không nằm trong allowlist này thì validation fail
-- nếu package nằm trong allowlist thì validator bỏ qua package đó
+---
 
-Giới hạn hiện tại:
+## `activation.forbidden_placeholder_patterns`
 
-- detector chỉ bắt một số package đã hardcode
-- đây không phải dependency sandbox thật
-- nó không đảm bảo chặn hết dynamic import
+Danh sách regex cấm trong description.
 
-Nói ngắn gọn: field này là van nới lỏng rule dependency ở lớp static validation.
+Ví dụ:
 
-### 7. `dependencies.forbidden_files`
+```text
+TODO
+FIXME
+PLACEHOLDER
+<something>
+```
 
-Đây là danh sách file path không được xuất hiện trong generated skill package.
+Nếu description match các pattern này thì fail validation.
 
-Tác dụng:
+Đây là hard gate.
 
-- chạy trong `_validate_no_external_dependencies()`
-- nếu generated files chứa path nằm trong danh sách này thì validation fail
+Mục đích: chặn skill còn đang dở, chưa được generate sạch.
 
-Ví dụ thường dùng:
+---
 
-- `requirements.txt`
-- `pyproject.toml`
-- `setup.py`
+## `dependencies.allowed_imports`
 
-Mục đích kiến trúc:
+Đây là allowlist cho third-party imports.
 
-- giữ skill package theo dạng local artifact đơn giản
-- tránh đưa package manager / dependency manifest vào publish path
+Nếu skill import package ngoài stdlib mà không nằm trong allowlist thì fail validation.
 
-### 8. `capability.operation_taxonomy`
+Hạn chế:
 
-Đây là bộ verb chuẩn cho metadata capability, ví dụ `read`, `write`, `search`, `summarize`.
+* đây chỉ là static check
+* hiện tại detector chưa bắt được mọi kiểu import
+* dynamic import vẫn có thể bypass nếu chỉ scan bằng regex
 
-Tác dụng:
+Ví dụ:
 
-- chạy trong `_validate_capability_metadata()`
-- validator dùng taxonomy này để kiểm tra `metadata.supported_actions` và `metadata.forbidden_actions`
-- action ngoài taxonomy hiện chỉ tạo warning, chưa fail build
+```python
+__import__("requests")
+```
 
-Vai trò trong architecture:
+```python
+import importlib
+importlib.import_module("requests")
+```
 
-- chuẩn hóa metadata trước khi skill đi vào runtime
-- giúp `select_skill()`, `check_capability()`, và các quyết định policy có metadata nhất quán hơn để dựa vào
+---
 
-Nó là semantic normalization layer, không phải runtime enforcement trực tiếp.
+## `dependencies.forbidden_files`
 
-### 9. `capability.allowed_side_effects`
+Danh sách file không được xuất hiện trong generated skill package.
 
-Đây là danh sách side effect hợp lệ cho `metadata.side_effects`.
+Ví dụ:
 
-Tác dụng:
+```text
+requirements.txt
+pyproject.toml
+setup.py
+```
 
-- chạy trong `_validate_capability_metadata()`
-- nếu skill khai báo side effect ngoài danh sách này thì validation fail
+Nếu generated skill có mấy file này thì fail validation.
 
-Ví dụ side effect thường có:
+Mục tiêu hiện tại: giữ skill package đơn giản, không để skill tự mang dependency vào publish path.
 
-- `file_read`
-- `file_write`
-- `file_delete`
-- `network`
-- `subprocess`
+```text
+./requirements.txt
+scripts/../requirements.txt
+Requirements.txt
+pyproject.TOML
+```
 
-Vai trò trong architecture:
+---
 
-- chuẩn hóa phần rủi ro của metadata
-- giúp runtime/review hiểu skill có thể tác động tới filesystem, network, hoặc process hay không
+## `capability.operation_taxonomy`
 
-Field này là hard gate cho giá trị metadata, nhưng chưa phải runtime sandbox permission thật.
+Danh sách action chuẩn cho metadata.
 
-### 10. `code_safety.risky_patterns`
+Ví dụ:
 
-Phần này đang hiển thị read-only trên UI.
+```text
+read
+write
+search
+summarize
+validate
+convert
+```
 
-Tác dụng:
+Validator dùng nó để check:
 
-- chạy trong `validate_code_safety()`
-- quét regex trên các file `.py`
-- rule có severity `error` sẽ fail validation
-- rule có severity `warning` sẽ chỉ thêm warning
+```text
+metadata.supported_actions
+metadata.forbidden_actions
+```
 
-Vai trò kiến trúc:
+Nếu action nằm ngoài taxonomy thì hiện tại chỉ warning, chưa fail.
 
-- đây là lớp code lint/risk scan nằm giữa `Generator` và `SandboxRunner`
-- nó giúp chặn một số pattern nguy hiểm trước khi skill được chạy thử
+Vai trò chính: chuẩn hóa metadata để runtime dễ hiểu hơn.
 
-Giới hạn:
+---
 
-- đây là regex scan MVP
-- không phải AST validator hoàn chỉnh
-- không phải security boundary tuyệt đối
+## `capability.allowed_side_effects`
 
-Muốn sửa phần này, hãy đổi YAML rồi nạp lại bằng `Policy YAML Path`.
+Danh sách side effect hợp lệ.
 
-## Những Field Có Trong Policy Nhưng Chưa Có Hoặc Chưa Dùng Thật Trên UI
+Ví dụ:
 
-Một số phần có trong `ValidationPolicy` nhưng hiện chưa phải luồng enforce đầy đủ:
+```text
+file_read
+file_write
+file_delete
+network
+subprocess
+```
 
-### `activation.require_domain`
+Nếu skill khai side effect ngoài danh sách này thì fail validation.
 
-- có trong schema/YAML
-- không có control riêng trên tab `Config`
-- theo code hiện tại, validator vẫn luôn đòi `metadata.domain` dù flag này có bật hay không
+---
 
-### `capability.action_side_effect_hints`
+## `code_safety.risky_patterns`
 
-- có trong schema/YAML
-- không có control trên UI
-- hiện chưa được validator dùng để suy luận hoặc block build
+Phần này hiện đang read-only trên UI.
 
-### `package.*`
+Nó dùng để scan các file `.py` bằng regex.
 
-- có trong schema/YAML
-- hiện chưa có package validator thật để enforce layout, size, hay path policy
+Rule có:
 
-### `prompt_eval.*`
+```text
+severity: error
+```
 
-- có trong schema/YAML
-- chưa có prompt eval runner
-- chưa tham gia publish gate
+thì fail validation.
 
-### `review.*`
+Rule có:
 
-- có trong schema/YAML
-- chưa được dùng để quyết định `requires_review`
-- human review hiện do flow agent/UI điều khiển, không phải do policy YAML này điều khiển trực tiếp
+```text
+severity: warning
+```
 
-## Kết Luận Thực Dụng
+thì chỉ warning.
 
-Nếu nhìn theo kiến trúc hiện tại, tab `Config` chủ yếu là UI để chỉnh phần policy của `StaticValidator`.
+Ví dụ rule có thể bắt:
 
-Bạn nên hiểu các field thành 3 nhóm:
+```python
+eval(...)
+```
 
-- hard gate: `min_description_chars`, `forbidden_placeholder_patterns`, `forbidden_files`, `allowed_imports`, `allowed_side_effects`, `code_safety` với severity `error`
-- warning/heuristic: `max_description_chars`, `require_action_verb`, `operation_taxonomy` với action ngoài taxonomy
-- config/planned nhưng chưa enforce đầy đủ: `require_domain`, `action_side_effect_hints`, `package`, `prompt_eval`, `review`
+```python
+os.system(...)
+```
 
-Nếu cần thay đổi hành vi ở runtime execution thật sự, chỉ sửa tab `Config` là chưa đủ. Lúc đó phải nhìn thêm vào:
+```python
+subprocess.run(...)
+```
 
-- `PolicyEngine`
-- `check_capability()`
-- `SandboxRunner`
-- luồng review trong `SkillChatAgent` và `InteractionGateway`
+Các kiểu bypass có thể có:
+
+```python
+from os import system
+system("ls")
+```
+
+```python
+import subprocess as sp
+sp.run(...)
+```
+
+```python
+__import__("subprocess").run(...)
+```
+
+---
+
+# Các field có trong policy nhưng chưa dùng đầy đủ
+
+## `activation.require_domain`
+
+Có trong schema/YAML.
+
+Nhưng hiện tại UI chưa có control riêng.
+
+Theo flow hiện tại, validator vẫn đang yêu cầu `metadata.domain`. Flag này chưa thực sự điều khiển behavior rõ ràng.
+
+Implementation chưa hoàn chỉnh.
+
+---
+
+## `capability.action_side_effect_hints`
+
+Có trong schema/YAML.
+
+Ví dụ:
+
+```yaml
+file_write:
+  - create
+  - write
+  - append
+```
+
+Ý tưởng là: nếu skill khai action `write` mà không khai `file_write`, validator có thể warning.
+
+Nhưng hiện tại phần này chưa được dùng đầy đủ để suy luận/block build.
+
+Nên coi là TODO.
+
+---
+
+## `package.*`
+
+Có trong YAML/schema.
+
+Ví dụ:
+
+```text
+allowed_top_level_paths
+forbidden_paths
+max_file_size_bytes
+max_skill_md_chars
+```
+
+Khi implement, nó sẽ check:
+
+* path traversal
+* absolute path
+* hidden file
+* cache folder
+* file quá lớn
+* folder ngoài layout cho phép
+
+---
+
+## `prompt_eval.*`
+
+Có trong policy nhưng hiện chưa có prompt eval runner.
+
+Nó chưa tham gia publish gate thật.
+
+Về sau phần này nên dùng để test skill bằng prompt thực tế, không chỉ test script.
+
+Ví dụ:
+
+```text
+User prompt -> skill selection -> skill execution/use -> final answer -> judge
+```
+
+Hiện tại nên coi là future config.
+
+---
+
+---
+
+# Chia nhóm field cho dễ nhớ
+
+## Hard gate
+
+Các field này đang hoặc nên fail validation nếu vi phạm:
+
+```text
+activation.min_description_chars
+activation.forbidden_placeholder_patterns
+dependencies.forbidden_files
+dependencies.allowed_imports
+capability.allowed_side_effects
+code_safety rule có severity=error
+```
+
+## Warning 
+
+Các field này chủ yếu giúp nâng quality, chưa nên coi là tuyệt đối:
+
+```text
+activation.max_description_chars
+activation.require_action_verb
+capability.operation_taxonomy với action ngoài taxonomy
+code_safety rule có severity=warning
+```
+
+## Có config nhưng chưa enforce đầy đủ
+
+Các phần này nên document rõ là planned/partial:
+
+```text
+activation.require_domain
+capability.action_side_effect_hints
+package.*
+prompt_eval.*
+review.*
+```
+
+---
+
