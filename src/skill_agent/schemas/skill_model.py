@@ -98,8 +98,10 @@ class ValidationReport(BaseModel):
     syntax_pass: bool = False
     metadata_pass: bool = False
     activation_pass: bool = False
+    code_safety_pass: bool = False
     execution_pass: bool = False
     regression_pass: bool = False
+    requires_review: bool = False
     publishable: bool = False
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -110,6 +112,7 @@ class ValidationReport(BaseModel):
             self.syntax_pass
             and self.metadata_pass
             and self.activation_pass
+            and self.code_safety_pass
             and self.execution_pass
             and not self.errors
         )

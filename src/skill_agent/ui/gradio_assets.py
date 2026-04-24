@@ -77,6 +77,30 @@ body,
   border-radius: 999px !important;
 }
 
+[role="tablist"] {
+  gap: 10px;
+  padding: 8px;
+  margin-bottom: 16px;
+  background: rgba(255, 250, 242, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+[role="tab"] {
+  border: 1px solid var(--line) !important;
+  border-radius: 999px !important;
+  background: var(--panel-strong) !important;
+  color: var(--ink) !important;
+  font-weight: 600 !important;
+  padding: 10px 18px !important;
+  min-height: 42px;
+}
+
+[role="tab"][aria-selected="true"] {
+  background: #e9dcc4 !important;
+  box-shadow: inset 0 0 0 1px rgba(88, 67, 36, 0.06);
+}
+
 /* Tool call accordion blocks inside chat bubbles */
 #chatbot .message-wrap details {
   border-left: 3px solid #818cf8;

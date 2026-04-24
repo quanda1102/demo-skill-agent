@@ -9,6 +9,7 @@ It covers two separate but related flows:
 
 See also:
 
+- [status.md](./status.md) for implemented vs partial vs TODO status labels
 - [architecture.md](./architecture.md) for where policy sits in the overall system
 - [validation.md](./validation.md) for the concrete validator and sandbox checks
 - [schema.md](./schema.md) for the status models and report shapes
@@ -98,7 +99,31 @@ It does not currently provide:
 - container isolation
 - per-side-effect sandbox permissions
 - multi-skill orchestration
-- automatic human review routing beyond the optional reviewer callback
+- policy-driven human review routing from `ValidationPolicy.review`
+
+## Validation Policy Config Status
+
+The repo now has a real YAML-backed validation policy in:
+
+- `policies/mvp-safe.yaml`
+- `src/skill_agent/validation/policy.py`
+
+That policy is only partially wired today.
+
+Sections consumed by validation code:
+
+- `dependencies`
+- `activation`
+- `capability`
+- `code_safety`
+
+Sections defined in schema/config but not enforced yet:
+
+- `package`
+- `prompt_eval`
+- `review`
+
+That distinction matters when reading `mvp-safe.yaml`: some sections describe real validation behavior today, while others are placeholders for future workflow or package-policy work.
 
 ## Publish Decision Flow
 
@@ -344,9 +369,21 @@ A skill is published only if:
 - syntax validation passes
 - metadata validation passes
 - activation validation passes
+- code safety validation passes
 - sandbox execution passes
 - `report.errors` is empty
 - reviewer does not reject it, when review is enabled
+
+Current review implementations:
+
+- `demo_generation.py` can block on a synchronous manual reviewer callback
+- `SkillChatAgent` + `app_gradio.py` can pause after automated checks and wait for approve/reject/needs changes
+
+What is not implemented yet:
+
+- deriving review requirements from `ValidationPolicy.review`
+- persistent review state or durable pending actions
+- a generic workflow runtime that resumes paused publish flows
 
 ### Publish Side Effect
 
@@ -437,6 +474,8 @@ These concepts exist in the docs or enums but are not fully implemented:
 - multi-runtime execution
 - regression comparison against previous skill versions
 - automatic confirmation workflow that resumes execution after approval
+- policy-driven review requirements from YAML config
+- durable workflow state / pending-action persistence
 
 ## Summary
 

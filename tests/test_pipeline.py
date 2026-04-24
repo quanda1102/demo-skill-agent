@@ -29,11 +29,15 @@ def test_build_skill_from_spec_emits_generator_and_sandbox_trace(
             return sample_skill
 
     class FakeValidator:
+        def __init__(self, policy=None):
+            self.policy = policy
+
         def validate(self, skill):
             report = ValidationReport(
                 syntax_pass=True,
                 metadata_pass=True,
                 activation_pass=True,
+                code_safety_pass=True,
             )
             return report
 
@@ -45,8 +49,8 @@ def test_build_skill_from_spec_emits_generator_and_sandbox_trace(
             report.compute_publishable()
             return report
 
-    monkeypatch.setattr("src.skill_agent.pipeline.Generator", FakeGenerator)
-    monkeypatch.setattr("src.skill_agent.pipeline.StaticValidator", FakeValidator)
+    monkeypatch.setattr("src.skill_agent.generation.pipeline.Generator", FakeGenerator)
+    monkeypatch.setattr("src.skill_agent.generation.pipeline.StaticValidator", FakeValidator)
 
     result, trace = build_skill_from_spec(
         spec=sample_spec,

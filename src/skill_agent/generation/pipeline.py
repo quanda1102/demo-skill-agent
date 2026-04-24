@@ -11,6 +11,7 @@ from src.skill_agent.providers.provider import LLMProvider
 from .publisher import PublishGateway
 from src.skill_agent.sandbox import LocalSandboxRunner, SandboxRunner
 from src.skill_agent.observability.trace_events import build_trace_event
+from src.skill_agent.validation.policy import ValidationPolicy
 from src.skill_agent.validation.validator import StaticValidator
 
 DEFAULT_MAX_RETRIES = 3
@@ -42,9 +43,10 @@ def build_skill_from_spec(
     max_retries: int = DEFAULT_MAX_RETRIES,
     sandbox_runner: SandboxRunner | None = None,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
+    policy: ValidationPolicy | None = None,
 ) -> tuple[PublishResult, PipelineTrace]:
     trace = PipelineTrace(event_sink=event_sink)
-    validator = StaticValidator()
+    validator = StaticValidator(policy=policy)
     sandbox = sandbox_runner if sandbox_runner is not None else LocalSandboxRunner()
     skill = None
     report = None

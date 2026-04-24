@@ -124,7 +124,7 @@ def test_build_skill_from_spec_tool_serializes_publish_result(monkeypatch, mock_
             PipelineTrace(events=[{"kind": "stage", "stage_num": 2, "stage": "generate", "attempt": 1, "max": 3, "msg": "Generating skill package"}]),
         )
 
-    monkeypatch.setattr("src.skill_agent.agent.build_skill_from_spec", fake_build_skill_from_spec)
+    monkeypatch.setattr("src.skill_agent.agent.agent.build_skill_from_spec", fake_build_skill_from_spec)
 
     raw = agent._tool_build_skill_from_spec(
         name="link-scraper",

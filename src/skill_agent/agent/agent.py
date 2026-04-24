@@ -4,7 +4,9 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
+from src.skill_agent.agent.os_monitor import collect_os_metrics
 from src.skill_agent.agent.agent_support import (
     rank_skill_stubs,
     serialize_execution_result_payload,
@@ -14,9 +16,12 @@ from src.skill_agent.agent.agent_support import (
 from src.skill_agent.agent.loop import AgentLoop, AgentLoopEvent, Tool
 from src.skill_agent.memory import MemoryManager
 from src.skill_agent.generation.pipeline import build_skill_from_spec
+from src.skill_agent.validation.policy import ValidationPolicy
 from src.skill_agent.prompt_loader import load_prompt
 from src.skill_agent.providers.provider import LLMProvider
 from src.skill_agent.runtime import discover_skills, execute_skill, load_skill
+from src.skill_agent.generation.publisher import PublishGateway
+from src.skill_agent.workflow.events import HumanDecisionEvent, WorkflowEvent
 from src.skill_agent.runtime.models import SkillStub
 from src.skill_agent.sandbox import SandboxRunner
 from src.skill_agent.sanitize import clean
@@ -51,6 +56,12 @@ class SkillChatAgent:
     verbose: bool = False
     event_sink: Callable[[dict], None] | None = None
     sandbox_runner: SandboxRunner | None = None
+    # When True, successful skill builds pause for human review before publishing.
+    require_human_review: bool = False
+    # Receives WorkflowEvent objects emitted during a turn (e.g. human_review_requested).
+    workflow_event_sink: Callable[[WorkflowEvent], None] | None = None
+    # Optional validation policy to pass to the pipeline.
+    validation_policy: ValidationPolicy | None = None
     # Pass a pre-configured MemoryManager to override storage location or inject
     # a custom MemoryProvider backend. When None, one is created automatically
     # at workspace_dir/.memory using local SQLite + JSON storage.
@@ -60,6 +71,8 @@ class SkillChatAgent:
         self._system_prompt = load_prompt("agent_system.md")
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self._skill_stubs: list[SkillStub] | None = None
+        # Holds generated skill + report while waiting for human approval.
+        self._pending_review: dict | None = None
         if self.memory_manager is None:
             self.memory_manager = MemoryManager.create(
                 data_dir=self.workspace_dir / ".memory"
@@ -101,6 +114,10 @@ class SkillChatAgent:
         trace_event = adapt_loop_event(event, source="agent")
         if trace_event is not None:
             self.event_sink(trace_event)
+
+    def _emit_workflow_event(self, event: WorkflowEvent) -> None:
+        if self.workflow_event_sink is not None:
+            self.workflow_event_sink(event)
 
     def _make_tools(self) -> list[Tool]:
         return [
@@ -156,6 +173,41 @@ class SkillChatAgent:
                     "required": ["skill_id", "input_payload"],
                 },
                 fn=self._tool_execute_skill,
+            ),
+            Tool(
+                name="get_os_metrics",
+                description=(
+                    "Read-only OS monitoring: OS details, CPU/RAM/disk/network usage, "
+                    "and top-k processes. No elevated privileges required."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "include": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["os_info", "cpu", "memory", "disk", "network", "top_processes"],
+                            },
+                            "description": "Sections to include. Defaults to all.",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of top processes to return (1-50, default 10).",
+                        },
+                        "sort_processes_by": {
+                            "type": "string",
+                            "enum": ["cpu", "memory"],
+                            "description": "Sort top processes by cpu or memory (default: cpu).",
+                        },
+                    },
+                    "required": [],
+                },
+                fn=lambda include=None, top_k=10, sort_processes_by="cpu": collect_os_metrics(
+                    include=include,
+                    top_k=top_k,
+                    sort_processes_by=sort_processes_by,
+                ),
             ),
             Tool(
                 name="build_skill_from_spec",
@@ -243,6 +295,7 @@ class SkillChatAgent:
         test_cases: list[dict[str, Any]] | None = None,
         required_files: list[str] | None = None,
     ) -> str:
+        run_id = f"run_{uuid4().hex[:8]}"
         spec = build_skill_spec(
             name=name,
             description=description,
@@ -255,15 +308,65 @@ class SkillChatAgent:
             runtime=runtime,
             test_cases=test_cases,
         )
+
+        # Capture the skill before publishing when human review is required.
+        pending_ref: list[tuple] = []
+
+        def _capture_for_review(skill, report):
+            pending_ref.append((skill, report))
+            return "pending_human_review"
+
         result, trace = build_skill_from_spec(
             spec=spec,
             generator_provider=self.generator_provider,
             skills_dir=self.skills_dir,
             sandbox_runner=self.sandbox_runner,
             event_sink=self.event_sink,
+            review_fn=_capture_for_review if self.require_human_review else None,
+            policy=self.validation_policy,
         )
+
         if result.published:
             self._refresh_skill_stubs()
+
+        # ── Emit WorkflowEvent based on outcome ───────────────────────────────
+        if pending_ref:
+            skill, report = pending_ref[0]
+            action_id = f"pa_{uuid4().hex[:8]}"
+            self._pending_review = {
+                "action_id": action_id,
+                "run_id": run_id,
+                "skill": skill,
+                "report": report,
+            }
+            self._emit_workflow_event(WorkflowEvent(
+                type="human_review_requested",
+                run_id=run_id,
+                payload={
+                    "pending_action_id": action_id,
+                    "title": f"Review before publishing: {skill.metadata.name}",
+                    "risk_level": _skill_risk_level(skill),
+                    "reasons": _review_reasons(skill, report),
+                    "allowed_decisions": ["approve", "reject", "needs_changes"],
+                    "summary": (
+                        f"Skill '{skill.metadata.name}' passed all automated checks. "
+                        "Approve to publish, reject to discard, or request changes."
+                    ),
+                },
+            ))
+        elif result.published:
+            self._emit_workflow_event(WorkflowEvent(
+                type="workflow_completed",
+                run_id=run_id,
+                payload={"summary": f"Published skill '{result.skill_name}' to {result.skill_path}."},
+            ))
+        else:
+            self._emit_workflow_event(WorkflowEvent(
+                type="workflow_failed",
+                run_id=run_id,
+                payload={"reason": result.message},
+            ))
+
         return json.dumps(
             serialize_publish_result_payload(result, trace_events=trace.events),
             ensure_ascii=False,
@@ -293,3 +396,82 @@ class SkillChatAgent:
             path = self.workspace_dir / path
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def confirm_pending_skill(
+        self, decision: HumanDecisionEvent
+    ) -> tuple[str, list[WorkflowEvent]]:
+        """
+        Apply a human decision to the pending skill review.
+
+        Returns (human-readable message, list of WorkflowEvents emitted).
+        WorkflowRuntime responsibility: this method validates that the pending
+        action still exists and that the action_id matches before acting.
+        """
+        pr = self._pending_review
+        if pr is None:
+            return "No skill is currently pending review.", []
+
+        if pr["action_id"] != decision.pending_action_id:
+            return "Decision ignored: pending action ID does not match.", []
+
+        run_id: str = pr["run_id"]
+        skill = pr["skill"]
+        report = pr["report"]
+        self._pending_review = None  # consume — prevent double-confirm
+        events: list[WorkflowEvent] = []
+
+        if decision.decision == "approved":
+            publish_result = PublishGateway(self.skills_dir).evaluate(skill, report)
+            if publish_result.published:
+                self._refresh_skill_stubs()
+                events.append(WorkflowEvent(
+                    type="workflow_completed",
+                    run_id=run_id,
+                    payload={"summary": f"Skill '{skill.metadata.name}' published."},
+                ))
+                return publish_result.message, events
+            events.append(WorkflowEvent(
+                type="workflow_failed",
+                run_id=run_id,
+                payload={"reason": publish_result.message},
+            ))
+            return publish_result.message, events
+
+        if decision.decision == "rejected":
+            note = f" {decision.notes}".rstrip() if decision.notes else ""
+            events.append(WorkflowEvent(
+                type="workflow_failed",
+                run_id=run_id,
+                payload={"reason": f"Rejected by reviewer.{note}"},
+            ))
+            return "Skill rejected and discarded.", events
+
+        # needs_changes
+        reason = decision.notes or "Changes requested."
+        events.append(WorkflowEvent(
+            type="workflow_failed",
+            run_id=run_id,
+            payload={"reason": reason},
+        ))
+        return "Changes noted — describe the updated requirements to regenerate the skill.", events
+
+
+# ── Module-level helpers (no business logic, pure metadata) ──────────────────
+
+def _skill_risk_level(skill) -> str:
+    effects = frozenset(skill.metadata.side_effects)
+    if effects & {"file_delete", "network", "subprocess"}:
+        return "high"
+    if effects & {"file_write"}:
+        return "medium"
+    return "low"
+
+
+def _review_reasons(skill, report) -> list[str]:
+    reasons: list[str] = []
+    if skill.metadata.side_effects:
+        reasons.append(f"Declared side effects: {', '.join(skill.metadata.side_effects)}")
+    if report.warnings:
+        reasons.append(f"{len(report.warnings)} validation warning(s) from static analysis")
+    reasons.append("Human review required by agent configuration before publishing.")
+    return reasons

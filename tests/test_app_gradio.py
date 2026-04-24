@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import app_gradio
+from src.skill_agent.validation.policy import ValidationPolicy
+from src.skill_agent.workflow import WorkflowEvent, WorkflowState
 
 
 class _FakeAgent:
@@ -61,11 +63,33 @@ class _FakeBuildAgent:
         return f"done: {user_message}"
 
 
+class _FakeReviewAgent:
+    def __init__(self):
+        self.event_sink = None
+        self.workflow_event_sink = None
+
+    def run_turn(self, user_message: str) -> str:
+        assert self.workflow_event_sink is not None
+        self.workflow_event_sink(
+            WorkflowEvent(
+                type="human_review_requested",
+                run_id="run_review",
+                payload={
+                    "pending_action_id": "pa_review",
+                    "allowed_decisions": ["approve", "reject", "needs_changes"],
+                    "title": "Review required",
+                    "summary": "Review this generated skill before publishing.",
+                },
+            )
+        )
+        return f"done: {user_message}"
+
+
 def test_send_message_preserves_full_tool_output(monkeypatch):
     tool_output = "tool-output-" * 80
     monkeypatch.setattr(app_gradio, "_AGENT", _FakeAgent(tool_output))
 
-    updates = list(app_gradio.send_message("run it", [], True, []))
+    updates = list(app_gradio.send_message("run it", [], True, [], None, {}))
     chat = updates[-1][0]
 
     tool_messages = [message for message in chat if message.metadata.get("title") == "  debug_tool"]
@@ -77,7 +101,7 @@ def test_send_message_preserves_full_tool_output(monkeypatch):
 def test_send_message_shows_build_trace_in_chat(monkeypatch):
     monkeypatch.setattr(app_gradio, "_AGENT", _FakeBuildAgent())
 
-    updates = list(app_gradio.send_message("build it", [], True, []))
+    updates = list(app_gradio.send_message("build it", [], True, [], None, {}))
     chat = updates[-1][0]
 
     trace_messages = [message for message in chat if message.metadata.get("title") == "  build trace"]
@@ -93,7 +117,7 @@ def test_send_message_streams_build_trace_in_chat(monkeypatch):
     monkeypatch.setattr(app_gradio, "_AGENT", _FakeBuildAgent())
 
     snapshots = []
-    for update in app_gradio.send_message("build it", [], True, []):
+    for update in app_gradio.send_message("build it", [], True, [], None, {}):
         chat = update[0]
         snapshots.append(
             [
@@ -113,3 +137,53 @@ def test_send_message_streams_build_trace_in_chat(monkeypatch):
         )
         for snapshot in snapshots[:-1]
     )
+
+
+def test_send_message_disables_chat_controls_while_review_is_pending(monkeypatch):
+    monkeypatch.setattr(app_gradio, "_AGENT", _FakeReviewAgent())
+
+    updates = list(app_gradio.send_message("build it", [], True, [], None, {}))
+    final_update = updates[-1]
+
+    assert final_update[1]["interactive"] is False
+    assert final_update[4].waiting_for_human is True
+    assert final_update[8]["interactive"] is False
+    assert final_update[9]["interactive"] is False
+
+
+def test_clear_session_is_blocked_while_review_is_pending():
+    wf_state = WorkflowState(
+        run_id="run_review",
+        current="waiting_for_human",
+        pending_action_id="pa_review",
+    )
+    history = ["existing history"]
+    current_events = [{"source": "agent", "kind": "info", "msg": "pending review"}]
+    review_meta = {"run_id": "run_review", "pending_action_id": "pa_review"}
+
+    result = app_gradio.clear_session(True, history, current_events, wf_state, review_meta)
+
+    assert result[0] == history
+    assert result[4] == wf_state
+    assert result[5] == review_meta
+    assert result[8]["interactive"] is False
+    assert result[9]["interactive"] is False
+
+
+def test_load_policy_from_ui_invalid_path_keeps_active_policy(monkeypatch):
+    baseline = ValidationPolicy(profile="baseline")
+
+    class _DummyAgent:
+        validation_policy = baseline
+
+    monkeypatch.setattr(app_gradio, "_AGENT", _DummyAgent())
+    monkeypatch.setattr(app_gradio, "_ACTIVE_POLICY", baseline)
+    monkeypatch.setattr(app_gradio, "_ACTIVE_POLICY_SOURCE", "baseline-source")
+    monkeypatch.setattr(app_gradio, "_POLICY_STATUS", "Ready.")
+
+    result = app_gradio.load_policy_from_ui("does-not-exist.yaml")
+
+    assert app_gradio._ACTIVE_POLICY is baseline
+    assert app_gradio._ACTIVE_POLICY_SOURCE == "baseline-source"
+    assert result[9].startswith("### Active Policy\nSource: `baseline-source`")
+    assert "Failed to load policy" in result[10]

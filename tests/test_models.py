@@ -54,6 +54,7 @@ def test_validation_report_compute_publishable_all_pass():
         syntax_pass=True,
         metadata_pass=True,
         activation_pass=True,
+        code_safety_pass=True,
         execution_pass=True,
         regression_pass=True,
     )

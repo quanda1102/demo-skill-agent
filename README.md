@@ -13,11 +13,32 @@ The primary demo is a Gradio web UI (`app_gradio.py`) that runs a multi-turn age
 - `demo_agent.py` runs the same agent as a CLI chat loop.
 - `demo_generation.py` runs a clarify → generate → validate → sandbox → publish pipeline.
 - `demo_runtime.py` discovers skills in `skills/`, runs scripted policy scenarios, and prints execution results.
-- `src/skill_agent/agent.py` contains the end-to-end agent orchestration and tool surface.
-- `src/skill_agent/validator.py` validates skill structure, frontmatter, metadata consistency, and activation quality.
+- `src/skill_agent/agent/agent.py` contains the end-to-end agent orchestration, tool surface, and pending review flow.
+- `src/skill_agent/validation/validator.py` validates skill structure, frontmatter, metadata consistency, activation quality, and regex-based code safety rules.
 - `src/skill_agent/sandbox/` runs test cases in a temporary directory (local) or Docker container (opt-in) and reports execution failures.
-- `src/skill_agent/publisher.py` writes publishable skills to disk and stamps `status: published`.
+- `src/skill_agent/generation/publisher.py` writes publishable skills to disk and stamps `status: published`.
 - `src/skill_agent/runtime/` contains discovery, selection, capability checks, policy decisions, loading, and execution.
+- `src/skill_agent/workflow/` contains workflow event/state models plus the UI interaction gateway used by Gradio.
+
+## Implementation Status
+
+The repo now has both fully wired features and config/schema placeholders. The table below reflects the current code paths, not TODO comments in prompts or YAML.
+
+| Area | Status | Current reality |
+| --- | --- | --- |
+| Skill validation pipeline | Implemented | `build_skill_from_spec()` and `demo_generation.run_pipeline()` execute generate → static validate → sandbox → publish with retries. |
+| Policy-as-config YAML validation policy | Partially implemented | `ValidationPolicyLoader` is live, but only some policy sections are consumed by validation code. |
+| Static validators | Implemented | Syntax, metadata, activation, and deterministic test-case checks run in `StaticValidator`. |
+| Code safety validators | Implemented (MVP) | Regex-based risky-pattern checks run during validation and block publish via `code_safety_pass`. |
+| Package validators | Planned / TODO | `package:` exists in the policy schema, but no validator enforces it yet. |
+| Execution / sandbox validation | Implemented | Local tempdir execution is the default; Docker isolation is opt-in. |
+| Prompt eval placeholders | Planned / TODO | `prompt_eval:` exists in policy only; there is no prompt eval runner. |
+| Human review gate | Partially implemented | CLI publish review exists, and Gradio can pause after automated checks for approve/reject/needs changes. |
+| Workflow runtime / state machine | Partially implemented | Workflow event/state models exist, but there is no standalone `WorkflowRuntime` or generic state machine engine. |
+| Pending actions | Partially implemented | The agent keeps one in-memory pending review action; there is no durable store or queue. |
+| Interaction gateway between workflow events and chat UI | Implemented | `InteractionGateway` renders/parses workflow events and is wired into `app_gradio.py`. |
+
+See [docs/status.md](docs/status.md) for code-level detail and evidence.
 
 ## Current Scope
 
@@ -219,11 +240,13 @@ Important directories:
 
 ## Documentation Map
 
+- [docs/status.md](docs/status.md): implementation status matrix for validation, review, workflow, and policy-as-config work.
 - [docs/architecture.md](docs/architecture.md): high-to-low system architecture from entrypoints down to module boundaries.
 - [docs/skill.md](docs/skill.md): the on-disk skill contract and authoring conventions.
 - [docs/schema.md](docs/schema.md): the Pydantic models and runtime result shapes used by the code.
 - [docs/validation.md](docs/validation.md): what the validator and sandbox actually check today.
 - [docs/policy.md](docs/policy.md): the implemented runtime policy and publish gate behavior.
+- [docs/policy-ui.vi.md](docs/policy-ui.vi.md): Vietnamese guide explaining `Config` tab policy fields, what they do, and where they sit in the architecture.
 - [docs/limitations.md](docs/limitations.md): detailed analysis of current limitations grounded in the implementation.
 - [docs/references.md](docs/references.md): external material that informed the design.
 
@@ -263,9 +286,9 @@ See [docs/limitations.md](docs/limitations.md) for a detailed analysis grounded 
 
 The current state is best described as a working local prototype:
 
-- generation and validation are implemented
-- runtime policy is implemented
-- publish gating is implemented
-- test coverage exists for the main behaviors
+- generation and runtime demos are working
+- validation and publish gating are real, but still MVP-level
+- workflow/review integration exists for the Gradio path, but not as a general runtime
+- some policy/config sections are placeholders only (`package`, `prompt_eval`, most of `review`)
 
-The next step is to harden the current implementation and close the gaps between the demo sandbox and a safer runtime.
+The next step is to harden the current implementation and close the gaps between the demo sandbox, the partial workflow/review path, and a safer runtime.

@@ -4,6 +4,7 @@ This document describes the current `skill-agent` architecture from high level d
 
 See also:
 
+- [status.md](./status.md) for implemented vs partial vs TODO status labels
 - [policy.md](./policy.md) for the decision rules applied on top of this structure
 - [validation.md](./validation.md) for publish-time checks
 - [schema.md](./schema.md) for the data contracts moving between layers
@@ -26,22 +27,32 @@ flowchart TD
     U --> AG[CLI Agent<br/>demo_agent.py]
     U --> SG[Skill Generation Demo<br/>demo_generation.py]
     U --> RD[Runtime Demo<br/>demo_runtime.py]
-    PL[Policy Layer<br/>publish gate + runtime gate]
+    RP[Runtime Policy<br/>PolicyEngine]
+    VP[Validation Policy<br/>YAML + UI overrides]
 
-    GU --> AGL[SkillChatAgent]
+    GU --> GT[Chat Tab]
+    GU --> GC[Config Tab]
+    GT --> IG[InteractionGateway]
+    IG --> AGL[SkillChatAgent]
+    AGL -. WorkflowEvent .-> IG
+    GC --> VPL[ValidationPolicyLoader<br/>or UI form overrides]
+    VPL --> VP
+    VP --> AGL
+
     AG --> AGL
-    AGL --> D[discover_skills]
-    AGL --> BG[build_skill_from_spec]
 
     SG --> C[Clarifier]
     C --> S[SkillSpec]
     S --> G[Generator]
+
+    AGL --> D[discover_skills]
+    AGL --> BG[build_skill_from_spec]
+    BG --> G
+
     G --> V[StaticValidator]
     V --> X[SandboxRunner]
     X --> P[PublishGateway]
     P --> K[(skills/)]
-
-    BG --> C
 
     RD --> D
     D --> Q[select_skill]
@@ -52,19 +63,21 @@ flowchart TD
 
     K --> D
 
-    PL -. publish rules .-> V
-    PL -. publish rules .-> X
-    PL -. publish rules .-> P
-    PL -. runtime rules .-> Y
+    VP -. publish rules .-> V
+    VP -. publish rules .-> X
+    VP -. publish rules .-> P
+    RP -. runtime rules .-> Y
 ```
 
 At a high level:
 
-- `app_gradio.py` is the primary demo: a web UI running the multi-turn `SkillChatAgent`
+- `app_gradio.py` is the primary demo: a web UI with a `Chat` tab and a `Config` tab
+- the Gradio `Chat` tab routes workflow events and review decisions through `InteractionGateway`
+- the Gradio `Config` tab loads or overrides the `ValidationPolicy` used for future skill builds
 - `demo_agent.py` is the same agent in a CLI chat loop
 - `demo_generation.py` runs the standalone clarify → generate → validate → sandbox → publish pipeline
 - `demo_runtime.py` runs predefined scripted scenarios against existing skills
-- `Policy Layer` is a cross-cutting control layer, not a separate user-facing entrypoint
+- `build_skill_from_spec` in the agent starts from an already normalized `SkillSpec`, so it enters at `Generator`, not `Clarifier`
 - `skills/` is the shared boundary between generation and runtime
 
 ## 2. Policy In The Architecture
@@ -99,7 +112,25 @@ Runtime policy is centered on:
 
 This is the part that decides whether a discovered skill may cross the boundary into actual execution.
 
-### 2.3 Why It Should Stay High-Level Here
+### 2.3 Workflow And Review Surface
+
+There is now a small workflow/review layer in the repo, but it is narrower than the name might suggest.
+
+Implemented today:
+
+- `src/skill_agent/workflow/events.py` defines `WorkflowEvent`, `WorkflowState`, and human-decision payloads
+- `src/skill_agent/workflow/gateway.py` maps workflow events to UI messages and parses UI/free-text replies back into structured decisions
+- `SkillChatAgent` can hold one pending review in memory and emit workflow events
+- `app_gradio.py` stores `WorkflowState` in component state and routes approve/reject/needs-changes decisions back into the agent
+
+Not implemented yet:
+
+- a standalone `WorkflowRuntime`
+- a general state machine that coordinates arbitrary workflow steps
+- durable storage for paused workflows or pending actions
+- policy-driven review routing from `ValidationPolicy.review`
+
+### 2.4 Why It Should Stay High-Level Here
 
 `architecture.md` should show where policy acts.
 
@@ -170,24 +201,35 @@ What this means in code:
 
 ```mermaid
 flowchart TD
-    U[User message] --> AG[SkillChatAgent.run_turn]
+    U[User input] --> GW[InteractionGateway]
+    GW -- normal chat --> AG[SkillChatAgent.run_turn]
+    GW -- human decision while waiting --> CP[confirm_pending_skill]
+
     AG --> FL[filter_skills tool]
-    FL -- no candidates --> AG2[Agent decides to reply without a skill]
+    FL -- no candidates --> RE[Return reply to user]
     FL -- candidates found --> LD[load_skill tool]
     LD -- skill has run_script --> EX[execute_skill tool]
     LD -- skill-generator selected --> BG[build_skill_from_spec tool]
-    EX -- succeeded / satisfied --> RE[Return reply to user]
-    EX -- failed / incorrect --> RE
-    BG -- publish succeeds --> RE
-    BG -- publish fails --> RE
-    AG2 --> RE
+    EX -- succeeded / failed / incorrect --> RE
+    BG -- publish succeeds or immediate reject --> RE
+    BG -- human_review_requested --> WF[WorkflowEvent]
+    WF --> GW2[InteractionGateway.render_event]
+    GW2 --> RC[Review card in Gradio]
+    RC --> U
+
+    CP --> PG[PublishGateway or discard]
+    PG --> WF2[workflow_completed / workflow_failed]
+    WF2 --> GW2
 ```
 
 What this means in code:
 
+- normal chat input goes through `InteractionGateway` first, but only waiting-review turns are intercepted
 - the agent never surfaces raw exceptions to the user — errors become part of the reply text
 - if no skill matches, the agent answers from its own knowledge
 - if `skill-generator` is selected, the agent triggers the full generation pipeline inline
+- if automated checks pass and human review is enabled, the agent emits `human_review_requested` instead of publishing immediately
+- Gradio renders that event as review actions and routes approve/reject/needs-changes back through `confirm_pending_skill()`
 - execution failures are reported back to the user as part of the assistant turn
 
 ## 4. User-Facing Modes
@@ -203,12 +245,15 @@ Purpose:
 - multi-turn chat interface backed by `SkillChatAgent`
 - includes a Turn Inspector panel showing raw model and tool events per turn
 - supports skill generation inline (via `skill-generator` skill)
+- includes a `Config` tab for loading or overriding the validation policy used for future skill builds
 
 User experience:
 
 - open `http://localhost:7860` in a browser
-- left panel: chat; right panel: trace/debug inspector
+- `Chat` tab: left panel chat, right panel trace/debug inspector
+- `Config` tab: load a policy YAML file or apply UI overrides to the active validation policy
 - `--docker` flag switches to `DockerSandboxRunner` for skill generation tests
+- `--policy` sets the initial validation policy loaded into the UI
 - a single shared agent instance is created at startup (single-tenant)
 
 ### 4.2 CLI Agent
@@ -269,7 +314,8 @@ User experience:
 ### Layer 2: Orchestration
 
 - `run_pipeline()` in `demo_generation.py` coordinates clarify → generate → validate → sandbox → publish
-- `SkillChatAgent.run_turn()` in `src/skill_agent/agent.py` drives the multi-turn agent loop
+- `SkillChatAgent.run_turn()` in `src/skill_agent/agent/agent.py` drives the multi-turn agent loop
+- `InteractionGateway` in `src/skill_agent/workflow/gateway.py` bridges workflow events, review decisions, and Gradio chat state
 - `PolicyEngine` in `src/skill_agent/runtime/policy.py` coordinates selection → capability → execution gating
 
 ### Layer 3: Core Services
@@ -281,6 +327,7 @@ Build plane:
 - `StaticValidator`
 - `SandboxRunner`
 - `PublishGateway`
+- `ValidationPolicyLoader`
 
 Runtime plane:
 
@@ -292,7 +339,7 @@ Runtime plane:
 
 ### Layer 4: Shared Contracts
 
-Defined mainly in [schema.md](./schema.md) and `src/skill_agent/models.py`:
+Defined mainly in [schema.md](./schema.md), `src/skill_agent/schemas/skill_model.py`, and `src/skill_agent/workflow/events.py`:
 
 - `SkillRequest`
 - `SkillSpec`
@@ -362,7 +409,7 @@ Responsibility:
 
 ### 6.4 Static Validation
 
-`src/skill_agent/validator.py` checks the generated artifact before execution.
+`src/skill_agent/validation/validator.py` checks the generated artifact before execution.
 
 Validation domains:
 
@@ -377,7 +424,7 @@ Key rule:
 
 ### 6.5 Sandbox Execution
 
-`src/skill_agent/sandbox.py` executes generated tests in a temporary directory.
+`src/skill_agent/sandbox/` executes generated tests in a temporary directory or, optionally, in Docker.
 
 Current behavior:
 

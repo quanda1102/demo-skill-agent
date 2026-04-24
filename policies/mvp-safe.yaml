@@ -1,0 +1,469 @@
+# Validation Policy — mvp-safe
+# Mirrors the original hardcoded validator behavior as closely as possible.
+# Change values here to adjust strictness without touching Python code.
+#
+# NOTE:
+# This policy file is NOT a security boundary by itself.
+# Real enforcement still depends on:
+# - validator implementation
+# - AST/static scanner quality
+# - sandbox/runtime restrictions
+# - workflow state machine
+# - human review gate
+#
+# Think of this file as:
+# - config for validation rules
+# - config for strictness
+# - config for warning/error severity
+#
+# Do not treat regex checks here as impossible to bypass.
+
+profile: mvp-safe
+
+dependencies:
+  mode: stdlib_only
+  # NOTE:
+  # "stdlib_only" is only strong if runtime actually runs in an isolated environment
+  # where third-party packages are unavailable.
+  # Source-code scanning alone can be bypassed via dynamic imports:
+  # - __import__("requests")
+  # - importlib.import_module("requests")
+  #
+  # TODO:
+  # Add runtime enforcement:
+  # - isolated venv/container
+  # - no pip install
+  # - no inherited site-packages
+  # - dependency allowlist if needed later.
+
+  allowed_imports: []
+  # NOTE:
+  # This is useful for policy flexibility, but not enough for hard security.
+  # If allowlist mode is added later, validator should check both:
+  # - static import statements
+  # - dynamic import patterns where possible.
+
+  forbidden_files:
+    - requirements.txt
+    - setup.py
+    - pyproject.toml
+    - setup.cfg
+    - Pipfile
+  # TODO:
+  # Validator should normalize paths before checking:
+  # - ./requirements.txt
+  # - scripts/../requirements.txt
+  # - Requirements.txt
+  # - pyproject.TOML
+  #
+  # NOTE:
+  # This part is relatively ready because path-based checks are deterministic,
+  # but only if path normalization is implemented correctly.
+
+activation:
+  min_description_chars: 20
+  max_description_chars: 500
+
+  require_action_verb: true
+  # NOTE:
+  # This is heuristic. A regex-based verb check can produce false positives
+  # and false negatives.
+  #
+  # TODO:
+  # Replace simple regex verb detection with better activation-quality scoring.
+  # Possible future checks:
+  # - action verb exists
+  # - domain object exists
+  # - clear trigger condition exists
+  # - description is not too broad
+  # - description is not too narrow
+
+  require_domain: true
+  # NOTE:
+  # This is conceptual unless validator has a real way to detect domain nouns.
+  # For MVP, this can be warning-level heuristic.
+
+  forbidden_placeholder_patterns:
+    - "\\bTODO\\b"
+    - "\\bFIXME\\b"
+    - "\\bPLACEHOLDER\\b"
+    - "<[^>]+>"
+  # NOTE:
+  # This is ready as a simple deterministic quality gate.
+
+capability:
+  operation_taxonomy:
+    - create
+    - read
+    - update
+    - delete
+    - remove # TODO: added because side_effect_hints uses "remove"; keep taxonomy and hints consistent.
+    - list
+    - move
+    - copy
+    - rename
+    - archive
+    - extract
+    - count
+    - search
+    - summarize
+    - parse
+    - format
+    - validate
+    - transform
+    - convert
+    - encode
+    - decode
+    - sort
+    - filter
+    - split
+    - join
+    - hash
+    - fetch
+    - write
+    - append
+    - execute
+    - run
+  # NOTE:
+  # This is ready for metadata normalization.
+  # It validates what the skill declares, not what the code actually does.
+  #
+  # TODO:
+  # Add consistency checks between:
+  # - metadata.supported_actions
+  # - metadata.side_effects
+  # - actual script behavior detected by CodeSafetyValidator / AST scanner.
+
+  allowed_side_effects:
+    - file_read
+    - file_write
+    - file_delete
+    - network
+    - subprocess
+  # NOTE:
+  # This is ready for metadata validation.
+  # But side effects are still self-declared until checked against source/runtime behavior.
+
+  action_side_effect_hints:
+    file_read:
+      - read
+      - parse
+      - summarize
+      - search
+      - extract
+
+    file_write:
+      - create
+      - write
+      - append
+      - update
+      - format
+      - convert
+      - move
+      - rename
+      - archive
+
+    file_delete:
+      - delete
+      - remove
+
+    network:
+      - fetch
+
+    subprocess:
+      - execute
+      - run
+  # NOTE:
+  # These are consistency hints, not hard proof.
+  # Example:
+  # - action=create may only create an in-memory object, not file_write.
+  # So missing side effect should usually be warning first, not error.
+  #
+  # TODO:
+  # Add configurable severity for consistency rules.
+  # Example:
+  # capability:
+  #   consistency:
+  #     missing_side_effect:
+  #       severity: warning
+  #     undeclared_detected_side_effect:
+  #       severity: error
+
+code_safety:
+  # NOTE:
+  # Regex-based code safety is useful as an MVP lint layer,
+  # but it is easy to bypass.
+  #
+  # Examples that regex may miss:
+  # - __import__("subprocess")
+  # - importlib.import_module("subprocess")
+  # - from os import system
+  # - p = Path("x"); p.unlink()
+  #
+  # TODO:
+  # Replace or supplement regex scanner with AST-based CodeSafetyValidator.
+  #
+  # TODO:
+  # Add runtime enforcement:
+  # - no network unless allowed
+  # - no subprocess unless allowed
+  # - restricted filesystem
+  # - timeout
+  # - memory limit
+  # - workspace-only writes
+
+  # TODO:
+  # Add explicit allow flags.
+  # These make policy intent clearer than relying only on risky_patterns.
+  #
+  # allow_eval: false
+  # allow_exec: false
+  # allow_subprocess: falseđi
+  # allow_shell_true: false
+  # allow_network: false
+  # allow_env_read: false
+  # allow_absolute_paths: false
+  # allow_file_delete: false
+
+  risky_patterns:
+    eval:
+      severity: error
+      patterns:
+        - "\\beval\\s*\\("
+      # NOTE:
+      # Regex catches direct eval(...), but not aliases or indirect calls.
+      # TODO: Detect eval via AST Name/Call analysis.
+
+    exec:
+      severity: error
+      patterns:
+        - "\\bexec\\s*\\("
+      # NOTE:
+      # Same limitation as eval.
+      # TODO: Detect exec via AST.
+
+    os_system:
+      severity: error
+      patterns:
+        - "\\bos\\.system\\s*\\("
+      # NOTE:
+      # Easy bypass:
+      # - from os import system
+      # - getattr(os, "system")(...)
+      #
+      # TODO:
+      # AST scanner should detect imported aliases and dangerous calls.
+
+    subprocess:
+      severity: error
+      patterns:
+        - "\\bsubprocess\\.run\\s*\\("
+        - "\\bsubprocess\\.Popen\\s*\\("
+      # NOTE:
+      # Misses:
+      # - from subprocess import run
+      # - import subprocess as sp; sp.run(...)
+      # - __import__("subprocess").run(...)
+      #
+      # TODO:
+      # AST scanner should track imports and aliases.
+
+    shell_true:
+      severity: error
+      patterns:
+        - "shell\\s*=\\s*True"
+      # NOTE:
+      # Good MVP check, but AST is better because formatting can vary.
+      # TODO:
+      # AST should detect keyword arg shell=True in subprocess calls.
+
+    delete_file:
+      severity: error
+      patterns:
+        - "\\bos\\.remove\\s*\\("
+        - "\\bPath\\([^\\)]*\\)\\.unlink\\s*\\("
+        - "\\bshutil\\.rmtree\\s*\\("
+      # NOTE:
+      # Current Path(...).unlink pattern is too narrow.
+      # Misses:
+      # - p = Path("x"); p.unlink()
+      # - some_file.unlink()
+      #
+      # TODO:
+      # Replace with AST method-call detection for:
+      # - .unlink()
+      # - .rmdir()
+      # - shutil.rmtree()
+      # - os.remove()
+      # - os.unlink()
+
+    env_read:
+      severity: warning
+      patterns:
+        - "\\bos\\.environ\\b"
+        - "\\bos\\.getenv\\s*\\("
+      # NOTE:
+      # Warning is reasonable for MVP.
+      # Some skills may need environment variables later, but secrets access
+      # should be reviewed.
+      #
+      # TODO:
+      # Add policy distinction:
+      # - env read allowed for non-secret config
+      # - secret-like env access requires review
+
+    network_import:
+      severity: error
+      patterns:
+        - "^\\s*import\\s+socket\\b"
+        - "^\\s*from\\s+socket\\s+import\\s+"
+        - "^\\s*import\\s+http\\.client\\b"
+        - "^\\s*from\\s+http\\.client\\s+import\\s+"
+        - "^\\s*import\\s+urllib\\.request\\b"
+        - "^\\s*from\\s+urllib\\s+import\\s+request\\b"
+        - "\\burllib\\.request\\.urlopen\\s*\\("
+        - "\\bhttp\\.client\\."
+      # NOTE:
+      # Still bypassable via dynamic import or aliases.
+      # TODO:
+      # Runtime sandbox should disable network when policy says network is not allowed.
+
+    absolute_path:
+      severity: warning
+      patterns:
+        - "['\"]/(Users|home|etc|var|tmp)/"
+        - "[A-Za-z]:\\\\"
+      # NOTE:
+      # Useful to catch local-machine-specific paths.
+      # Not always dangerous, but bad for portability.
+      #
+      # TODO:
+      # Later decide whether absolute paths should be error in enterprise mode.
+
+    path_traversal:
+      severity: error
+      patterns:
+        - "\\.\\./"
+      # NOTE:
+      # Good MVP check for obvious traversal.
+      # TODO:
+      # Runtime file access should resolve real paths and enforce workspace boundary.
+
+    secret_literal:
+      severity: warning
+      patterns:
+        - "(?i)api[_-]?key\\s*=\\s*['\"][^'\"]+['\"]"
+        - "(?i)token\\s*=\\s*['\"][^'\"]+['\"]"
+        - "(?i)password\\s*=\\s*['\"][^'\"]+['\"]"
+        - "(?i)bearer\\s+[A-Za-z0-9._\\-]+"
+      # NOTE:
+      # Regex secret detection is noisy.
+      # Keep warning for MVP.
+      #
+      # TODO:
+      # Add allowlist for fake/test secrets in test fixtures.
+
+package:
+  allowed_top_level_paths:
+    - SKILL.md
+    - "scripts/"
+    - "references/"
+    - "assets/"
+    - "tests/"
+  # NOTE:
+  # Ready if validator normalizes paths.
+  #
+  # TODO:
+  # Reject:
+  # - absolute paths
+  # - path traversal
+  # - mixed separators
+  # - hidden top-level files unless explicitly allowed
+
+  forbidden_paths:
+    - .env
+    - .DS_Store
+    - ".git/"
+    - "__pycache__/"
+    - ".pytest_cache/"
+    - ".mypy_cache/"
+  # NOTE:
+  # Good deterministic package hygiene check.
+  #
+  # TODO:
+  # Check both exact path and nested path:
+  # - scripts/__pycache__/
+  # - references/.DS_Store
+  # - assets/.env
+  #
+  # TODO:
+  # Consider prefix/pattern based forbidden paths instead of exact string only.
+
+  max_file_size_bytes: 500000
+  max_skill_md_chars: 8000
+  # NOTE:
+  # Ready.
+  # TODO:
+  # Add total package size limit, not only per-file limit.
+
+prompt_eval:
+  required: false
+  min_cases: 2
+  allow_llm_judge: true
+  # NOTE:
+  # This is mostly conceptual until PromptEvalRunner exists.
+  #
+  # TODO:
+  # Add PromptEvalCase model:
+  # - user_prompt
+  # - expected_behavior
+  # - required_keywords
+  # - forbidden_keywords
+  # - expected_files_used
+  # - rubric
+  #
+  # TODO:
+  # Add deterministic eval first:
+  # - contains
+  # - regex
+  # - json_schema
+  #
+  # TODO:
+  # Add LLM judge later, but do not make it the only eval signal.
+  #
+  # NOTE:
+  # If required=true but runner is not implemented,
+  # validator should report "not implemented" clearly and avoid fake pass.
+
+review:
+  require_for_side_effects:
+    - file_write
+    - file_delete
+    - network
+    - subprocess
+  require_for_warnings: false
+  # NOTE:
+  # This is workflow config, not normal static validation.
+  # It only becomes meaningful after implementing:
+  # - WorkflowRuntime / StateMachine
+  # - PendingAction
+  # - ReviewRequest
+  # - ReviewDecision
+  # - InteractionGateway
+  #
+  # TODO:
+  # Add review.enabled.
+  # TODO:
+  # Add require_for_risk_level.
+  # TODO:
+  # Add allow_override_errors=false.
+  # TODO:
+  # Add decision_storage=file|db.
+  # TODO:
+  # Add review_file_name=review.json.
+  #
+  # NOTE:
+  # Human review should not override hard validation errors by default.
+  # Recommended rule:
+  # - errors block publish
+  # - warnings/risky side effects require review
