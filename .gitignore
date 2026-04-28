@@ -36,8 +36,12 @@ htmlcov/
 .DS_Store
 .AppleDouble
 
-# Vault (runtime/agent demo output — not source)
-vault/
+# Local demo data
+data/
+
+# Runtime-generated nodes
+src/skill_agent/engine/nodes/agent_built/*
+!src/skill_agent/engine/nodes/agent_built/.gitkeep
 
 # Logs
 *.log
@@ -45,26 +49,3 @@ vault/
 # Environment variables
 .env
 .env.local
-
-# Ignore generated skills
-skills/*
-
-# Keep default skills
-!skills/broken-skill/
-!skills/broken-skill/**
-!skills/file-archiver/
-!skills/file-archiver/**
-!skills/note-searcher/
-!skills/note-searcher/**
-!skills/obsidian-crud/
-!skills/obsidian-crud/**
-!skills/obsidian-note-writer/
-!skills/obsidian-note-writer/**
-!skills/scrape-links/
-!skills/scrape-links/**
-!skills/skill-generator/
-!skills/skill-generator/**
-!skills/url-to-markdown/
-!skills/url-to-markdown/**
-!skills/word-counter/
-!skills/word-counter/**

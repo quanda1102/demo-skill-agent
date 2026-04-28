@@ -25,6 +25,7 @@ def run_command(
     operation_name: str,
     input_text: str | None = None,
     cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     def _invoke() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -34,6 +35,7 @@ def run_command(
             text=True,
             timeout=contract.timeout_seconds,
             cwd=str(cwd) if cwd is not None else None,
+            env=env,
         )
 
     return run_with_retry(

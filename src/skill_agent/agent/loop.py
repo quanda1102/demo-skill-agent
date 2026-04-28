@@ -51,12 +51,14 @@ class AgentLoop:
         provider: LLMProvider,
         tools: list[Tool] | None = None,
         stop_on: str | None = None,
+        should_stop: Callable[[str, str], bool] | None = None,
         on_event: Callable[[AgentLoopEvent], None] | None = None,
     ) -> None:
         self.provider = provider
         self._tool_map = {t.name: t for t in (tools or [])}
         self._tool_schemas: list[dict] | None = [t.to_schema() for t in tools] if tools else None
         self._stop_on = stop_on
+        self._should_stop = should_stop
         self._on_event = on_event
 
     def run(self, messages: list) -> str:
@@ -172,7 +174,9 @@ class AgentLoop:
                     "content": str(output),
                 })
 
-                if name == self._stop_on:
+                if self._should_stop is not None and self._should_stop(name, str(output)):
+                    stop_result = str(output)
+                elif self._should_stop is None and name == self._stop_on:
                     stop_result = str(output)
 
             if stop_result is not None:
